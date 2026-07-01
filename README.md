@@ -3,7 +3,7 @@ A Xray backend framework that can easily support many panels.
 
 一个基于Xray的后端框架，支持V2ay,Trojan,Shadowsocks协议，极易扩展，支持多面板对接
 
-Find the source code here: [Mtoly/XrayR](https://github.com/Mtoly/XrayRP)
+Find the source code here: [Mtoly/XrayRP](https://github.com/Mtoly/XrayRP)
 
 # 详细使用教程
 
@@ -12,7 +12,40 @@ Find the source code here: [Mtoly/XrayR](https://github.com/Mtoly/XrayRP)
 # 一键安装
 
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/Mtoly/XrayRPS/master/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install.sh)
+```
+
+# Xboard Machine Mode 一键安装
+
+此安装脚本只生成 XrayRP `MachineConfig` 并安装/启动 XrayR 服务，不会在 Xboard 中创建或注册机器。请先在 Xboard 创建/绑定机器，并复制对应的 `MachineID` 和 `Token`。
+
+`MachineConfig` 与静态 `Nodes` 配置互斥。启用机器模式时，`/etc/XrayR/config.yml` 不会生成静态 `Nodes`。
+
+安装示例：
+
+```
+bash <(curl -Ls https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install-machine.sh) \
+  --api-host https://panel.example.com \
+  --machine-id 1 \
+  --token "machine-token" \
+  --panel-type NewV2board \
+  --enable-ws
+```
+
+如果 `/etc/XrayR/config.yml` 已存在，脚本默认不会覆盖；确认要覆盖时添加 `--force`。
+
+状态与日志：
+
+```
+systemctl status XrayR
+journalctl -u XrayR -f
+XrayR log
+```
+
+卸载：
+
+```
+XrayR uninstall
 ```
 # Docker 安装
 
