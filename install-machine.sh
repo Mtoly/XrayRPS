@@ -318,6 +318,58 @@ yaml_escape() {
     printf '%s' "$value"
 }
 
+read_yaml_section_scalar() {
+    local source_file="$1"
+    local section="$2"
+    local key="$3"
+
+    awk -v section="$section" -v key="$key" '
+        function trim(value) {
+            sub(/^[[:space:]]+/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            return value
+        }
+
+        function scalar(value, quote) {
+            value = trim(value)
+            quote = substr(value, 1, 1)
+            if (quote == "\"" || quote == "\047") {
+                value = substr(value, 2)
+                sub(quote "[[:space:]]*(#.*)?$", "", value)
+                return value
+            }
+            sub(/[[:space:]]+#.*$/, "", value)
+            return trim(value)
+        }
+
+        $0 ~ ("^" section "[[:space:]]*:") {
+            in_section = 1
+            next
+        }
+
+        in_section && $0 ~ /^[^[:space:]#]/ {
+            exit
+        }
+
+        in_section {
+            line = $0
+            sub(/^[[:space:]]+/, "", line)
+            if (line ~ ("^" key "[[:space:]]*:")) {
+                sub(("^" key "[[:space:]]*:"), "", line)
+                print scalar(line)
+                found = 1
+                exit
+            }
+        }
+
+        END {
+            if (!found) {
+                exit 1
+            }
+        }
+    ' "$source_file"
+}
+
 validate_machine() {
     local endpoint="${api_host}/api/v2/server/machine/nodes"
     local payload
@@ -424,7 +476,12 @@ download_and_install_release() {
 
 write_machine_config() {
     local tmp_config
+    local observability_enable="true"
+    local observability_listen="127.0.0.1:10085"
+    local observability_stale_after="180"
+    local preserved_value
     local escaped_api_host
+    local escaped_observability_listen
     local escaped_panel_type
     local escaped_token
     local escaped_listen_ip
@@ -432,9 +489,29 @@ write_machine_config() {
     local escaped_ws_endpoint
 
     mkdir -p "$config_dir"
+
+    if [[ -f "$config_file" ]]; then
+        if preserved_value=$(read_yaml_section_scalar "$config_file" "Observability" "Enable"); then
+            case "${preserved_value,,}" in
+                true|false)
+                    observability_enable="${preserved_value,,}"
+                    ;;
+            esac
+        fi
+        if preserved_value=$(read_yaml_section_scalar "$config_file" "Observability" "Listen"); then
+            observability_listen="$preserved_value"
+        fi
+        if preserved_value=$(read_yaml_section_scalar "$config_file" "Observability" "ReadinessStaleAfter"); then
+            if [[ "$preserved_value" =~ ^[0-9]+$ ]]; then
+                observability_stale_after="$preserved_value"
+            fi
+        fi
+    fi
+
     tmp_config=$(mktemp "${config_file}.tmp.XXXXXX")
 
     escaped_api_host=$(yaml_escape "$api_host")
+    escaped_observability_listen=$(yaml_escape "$observability_listen")
     escaped_panel_type=$(yaml_escape "$panel_type")
     escaped_token=$(yaml_escape "$token")
     escaped_listen_ip=$(yaml_escape "$listen_ip")
@@ -461,6 +538,11 @@ ConnectionConfig:
   DownlinkOnly: 4
   BufferSize: 4
 
+Observability:
+  Enable: ${observability_enable}
+  Listen: "${escaped_observability_listen}"
+  ReadinessStaleAfter: ${observability_stale_after}
+
 MachineConfig:
   Enable: true
   PanelType: "${escaped_panel_type}"
@@ -473,18 +555,18 @@ MachineConfig:
     ListenIP: ${escaped_listen_ip}
     SendIP: ${escaped_send_ip}
     UpdatePeriodic: ${discovery_interval}
-  WebSocketConfig:
-    Enable: ${enable_ws}
+    WebSocketConfig:
+      Enable: ${enable_ws}
 EOF
         if [[ -n "$escaped_ws_endpoint" ]]; then
-            echo "    Endpoint: \"${escaped_ws_endpoint}\""
+            echo "      Endpoint: \"${escaped_ws_endpoint}\""
         else
-            echo "    Endpoint:"
+            echo "      Endpoint:"
         fi
         cat <<EOF
-    HeartbeatInterval: ${heartbeat_interval}
-    ReconnectBackoff: ${reconnect_backoff}
-    ResyncOnReconnect: ${resync_on_reconnect}
+      HeartbeatInterval: ${heartbeat_interval}
+      ReconnectBackoff: ${reconnect_backoff}
+      ResyncOnReconnect: ${resync_on_reconnect}
 EOF
     } > "$tmp_config"
 
@@ -571,4 +653,6 @@ main() {
     print_next_steps
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
