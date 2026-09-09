@@ -12,7 +12,9 @@ Find the source code here: [Mtoly/XrayRP](https://github.com/Mtoly/XrayRP)
 # 一键安装
 
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install.sh)
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o install.sh https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install.sh
+bash install.sh
+rm -f install.sh
 ```
 
 # Xboard Machine Mode 一键安装
@@ -24,7 +26,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install.sh)
 安装示例：
 
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install-machine.sh) \
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o install-machine.sh https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install-machine.sh
+bash install-machine.sh \
   --api-host https://panel.example.com \
   --machine-id 1 \
   --token "machine-token" \
@@ -50,21 +53,23 @@ XrayR uninstall
 # Docker 安装
 
 ```
-docker pull ghcr.io/Mtoly/xrayr:latest && docker run --restart=always --name xrayr -d -v ${PATH_TO_CONFIG}/config.yml:/etc/XrayR/config.yml --network=host ghcr.io/Mtoly/xrayr:latest
+docker pull ghcr.io/mtoly/xrayr:0.9.1-alpha-6
+docker run --detach --restart=unless-stopped --name xrayr --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev --security-opt no-new-privileges:true --cap-drop=ALL --volume "${PATH_TO_CONFIG}/config.yml:/etc/XrayR/config.yml:ro" --network=host ghcr.io/mtoly/xrayr:0.9.1-alpha-6
 ```
 
 # Docker compose 安装
 0. 安装docker-compose: 
 ```
-curl -fsSL https://get.docker.com | bash -s docker
-curl -L "https://github.com/docker/compose/releases/download/1.26.1/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-chmod +x /usr/local/bin/docker-compose
+curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o get-docker.sh https://get.docker.com
+sh get-docker.sh
+rm -f get-docker.sh
+# Prefer the Docker Compose plugin supplied by the distribution.
 ```
 1. `git clone https://github.com/Mtoly/XrayRPS`
 2. `cd XrayRPS`
 3. 编辑config。
 配置文件基本格式如下，Nodes下可以同时添加多个面板，多个节点配置信息，只需添加相同格式的Nodes item即可。
-4. 启动docker：`docker-compose up -d`
+4. 启动docker：`docker compose up -d`
 ```
 Log:
   Level: none # Log level: none, error, warning, info, debug 
@@ -82,7 +87,7 @@ Nodes:
     PanelType: "SSpanel" # Panel type: SSpanel, V2board, PMpanel
     ApiConfig:
       ApiHost: "http://127.0.0.1:667"
-      ApiKey: "123"
+      ApiKey: "YOUR_API_KEY"
       NodeID: 41
       NodeType: V2ray # Node type: V2ray, Shadowsocks, Trojan
       Timeout: 30 # Timeout for the api request
@@ -113,13 +118,13 @@ Nodes:
         Provider: alidns # DNS cert provider, Get the full support list here: https://go-acme.github.io/lego/dns/
         Email: test@me.com
         DNSEnv: # DNS ENV option used by DNS provider
-          ALICLOUD_ACCESS_KEY: aaa
-          ALICLOUD_SECRET_KEY: bbb
+          ALICLOUD_ACCESS_KEY: YOUR_ACCESS_KEY
+          ALICLOUD_SECRET_KEY: YOUR_SECRET_KEY
   # -
   #   PanelType: "V2board" # Panel type: SSpanel, V2board
   #   ApiConfig:
   #     ApiHost: "http://127.0.0.1:668"
-  #     ApiKey: "123"
+  #     ApiKey: "YOUR_API_KEY"
   #     NodeID: 4
   #     NodeType: Shadowsocks # Node type: V2ray, Shadowsocks, Trojan
   #     Timeout: 30 # Timeout for the api request
@@ -139,13 +144,24 @@ Nodes:
   #       Provider: alidns # DNS cert provider, Get the full support list here: https://go-acme.github.io/lego/dns/
   #       Email: test@me.com
   #       DNSEnv: # DNS ENV option used by DNS provider
-  #         ALICLOUD_ACCESS_KEY: aaa
-  #         ALICLOUD_SECRET_KEY: bbb
+  #         ALICLOUD_ACCESS_KEY: YOUR_ACCESS_KEY
+  #         ALICLOUD_SECRET_KEY: YOUR_SECRET_KEY
 ```
 
 ## Docker compose升级
-在docker-compose.yml目录下执行：
+在 `docker-compose.yml` 所在目录执行。升级前先 review 目标标签，并确认配置已备份：
+
 ```
-docker-compose pull
-docker-compose up -d
+docker compose config
+docker compose pull
+docker compose up -d --remove-orphans
+docker compose ps
 ```
+
+## 安全基线与恢复
+
+- 生产环境固定发布版本并保存对应的 `SHA256SUMS` 与部署记录。
+- systemd 部署使用专用 `xrayr` 服务账号；容器部署使用只读配置挂载、只读根文件系统和能力收敛。
+- `config/custom_inbound.json` 仅作为本地示例，启用前必须替换凭据并确认监听地址。
+- 更新失败时保留上一版本目录和配置备份；先停止服务，再恢复上一版本并检查 `systemctl status XrayR` 或 `docker compose ps`。
+- 漏洞报告与敏感信息处理流程见 [`SECURITY.md`](SECURITY.md)。

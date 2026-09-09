@@ -1,0 +1,16 @@
+# Local configuration and credentials
+.env
+.env.*
+*.key
+*.pem
+*.crt
+*.p12
+config/local*
+config/*.local.*
+
+# Runtime output and temporary files
+*.log
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
