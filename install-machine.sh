@@ -215,7 +215,10 @@ validate_args() {
     validate_number "--reconnect-backoff" "$reconnect_backoff"
     resync_on_reconnect=$(parse_bool "--resync-on-reconnect" "$resync_on_reconnect")
 
-    [[ "$version" == "latest" || "$version" == v* ]] || version="v${version}"
+    if [[ "$version" != "latest" ]]; then
+        [[ "$version" == v* ]] || version="v${version}"
+        [[ "$version" =~ ^v?[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || die "Invalid release version: ${version}"
+    fi
 }
 
 require_root() {
@@ -396,11 +399,43 @@ validate_machine() {
     fi
 }
 
+download_https() {
+    local url="$1"
+    local destination="$2"
+
+    curl --fail --silent --show-error --location \
+        --proto '=https' --tlsv1.2 \
+        --connect-timeout "$timeout" --max-time "$timeout" \
+        -o "$destination" "$url"
+}
+
 resolve_version() {
+    local metadata_file
+
     if [[ "$version" == "latest" ]]; then
-        version=$(curl -fsSL "https://api.github.com/repos/${release_repo}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+        metadata_file=$(mktemp "${TMPDIR:-/tmp}/xrayr-release-metadata.XXXXXX")
+        if ! download_https "https://api.github.com/repos/${release_repo}/releases/latest" "$metadata_file"; then
+            rm -f -- "$metadata_file"
+            die "Failed to detect latest XrayRP release version"
+        fi
+        version=$(grep '"tag_name":' "$metadata_file" | sed -E 's/.*"([^"]+)".*/\1/' | head -n 1)
+        rm -f -- "$metadata_file"
         [[ -n "$version" ]] || die "Failed to detect latest XrayRP release version"
     fi
+    [[ "$version" =~ ^v?[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || die "Invalid release version: ${version}"
+}
+
+verify_release_checksum() {
+    local release_dir="$1"
+    local artifact_name="$2"
+    local checksum_file="${release_dir}/SHA256SUMS"
+    local expected
+
+    [[ -f "$checksum_file" ]] || return 1
+    expected=$(awk -v artifact="$artifact_name" '$2 == artifact || $2 == "*" artifact {print $1; exit}' "$checksum_file")
+    [[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || return 1
+    [[ -f "${release_dir}/${artifact_name}" ]] || return 1
+    printf '%s  %s\n' "$expected" "${release_dir}/${artifact_name}" | sha256sum -c - >/dev/null
 }
 
 install_service() {
@@ -432,7 +467,9 @@ install_management_script() {
     if [[ -f "${cur_dir}/XrayR.sh" ]]; then
         cp -f "${cur_dir}/XrayR.sh" "$management_script"
     else
-        curl -fLsS -o "$management_script" "https://raw.githubusercontent.com/${script_repo}/${raw_branch}/XrayR.sh"
+        curl --fail --silent --show-error --location \
+            --proto '=https' --tlsv1.2 \
+            -o "$management_script" "https://raw.githubusercontent.com/${script_repo}/${raw_branch}/XrayR.sh"
     fi
     chmod +x "$management_script"
     ln -sf "$management_script" /usr/bin/xrayr
@@ -450,18 +487,33 @@ copy_default_config_file() {
 
 download_and_install_release() {
     local download_url
+    local release_dir
+    local artifact_name
 
     resolve_version
-    download_url="https://github.com/${release_repo}/releases/download/${version}/XrayR-linux-${arch_name}.zip"
+    artifact_name="XrayR-linux-${arch_name}.zip"
+    download_url="https://github.com/${release_repo}/releases/download/${version}/${artifact_name}"
 
     info "Installing XrayRP ${version} (${arch_name})"
+    release_dir=$(mktemp -d "${TMPDIR:-/tmp}/xrayr-release.XXXXXX")
+    if ! download_https "$download_url" "${release_dir}/${artifact_name}"; then
+        rm -rf -- "$release_dir"
+        die "Failed to download release artifact"
+    fi
+    if ! download_https "https://github.com/${release_repo}/releases/download/${version}/SHA256SUMS" "${release_dir}/SHA256SUMS"; then
+        rm -rf -- "$release_dir"
+        die "Failed to download release checksums"
+    fi
+    if ! verify_release_checksum "$release_dir" "$artifact_name"; then
+        rm -rf -- "$release_dir"
+        die "Release checksum verification failed for ${artifact_name}"
+    fi
+
     rm -rf "$install_dir"
     mkdir -p "$install_dir"
     cd "$install_dir"
-
-    wget -q -N --no-check-certificate -O "${install_dir}/XrayR-linux.zip" "$download_url"
-    unzip -oq XrayR-linux.zip
-    rm -f XrayR-linux.zip
+    unzip -oq "${release_dir}/${artifact_name}"
+    rm -rf -- "$release_dir"
     chmod +x XrayR
 
     mkdir -p "$config_dir"

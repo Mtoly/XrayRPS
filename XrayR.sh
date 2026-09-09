@@ -73,6 +73,23 @@ confirm() {
     fi
 }
 
+
+run_remote_installer() {
+    local script_url="$1"
+    local script_file
+    shift
+    script_file=$(mktemp)
+    if ! curl --fail --silent --show-error --location \
+        --proto '=https' --tlsv1.2 -o "$script_file" "$script_url"; then
+        rm -f -- "$script_file"
+        return 1
+    fi
+    bash "$script_file" "$@"
+    local result=$?
+    rm -f -- "$script_file"
+    return "$result"
+}
+
 confirm_restart() {
     confirm "是否重启XrayR" "y"
     if [[ $? == 0 ]]; then
@@ -88,7 +105,7 @@ before_show_menu() {
 }
 
 install() {
-    bash <(curl -Ls https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install.sh)
+    run_remote_installer https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install.sh
     if [[ $? == 0 ]]; then
         if [[ $# == 0 ]]; then
             start
@@ -112,7 +129,7 @@ update() {
 #        fi
 #        return 0
 #    fi
-    bash <(curl -Ls https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install.sh) $version
+    run_remote_installer https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install.sh $version
     if [[ $? == 0 ]]; then
         echo -e "${green}更新完成，已自动重启 XrayR，请使用 XrayR log 查看运行日志${plain}"
         exit
@@ -736,7 +753,7 @@ show_log() {
 }
 
 install_bbr() {
-    bash <(curl -L -s https://raw.githubusercontent.com/chiakge/Linux-NetSpeed/master/tcp.sh)
+    run_remote_installer https://raw.githubusercontent.com/chiakge/Linux-NetSpeed/master/tcp.sh
     #if [[ $? == 0 ]]; then
     #    echo ""
     #    echo -e "${green}安装 bbr 成功，请重启服务器${plain}"
@@ -749,15 +766,25 @@ install_bbr() {
 }
 
 update_shell() {
-    wget -O /usr/bin/XrayR -N --no-check-certificate https://raw.githubusercontent.com/Mtoly/XrayRPS/main/XrayR.sh
-    if [[ $? != 0 ]]; then
+    local script_file
+    script_file=$(mktemp "${TMPDIR:-/tmp}/xrayr-management.XXXXXX") || return 1
+    if ! curl --fail --silent --show-error --location \
+        --proto '=https' --tlsv1.2 \
+        -o "$script_file" https://raw.githubusercontent.com/Mtoly/XrayRPS/main/XrayR.sh; then
+        rm -f -- "$script_file"
         echo ""
         echo -e "${red}下载脚本失败，请检查本机能否连接 Github${plain}"
         before_show_menu
-    else
-        chmod +x /usr/bin/XrayR
-        echo -e "${green}升级脚本成功，请重新运行脚本${plain}" && exit 0
+        return 1
     fi
+    if ! install -m 755 "$script_file" /usr/bin/XrayR; then
+        rm -f -- "$script_file"
+        echo -e "${red}更新脚本失败，无法替换管理脚本${plain}"
+        before_show_menu
+        return 1
+    fi
+    rm -f -- "$script_file"
+    echo -e "${green}升级脚本成功，请重新运行脚本${plain}" && exit 0
 }
 
 # 0: running, 1: not running, 2: not installed

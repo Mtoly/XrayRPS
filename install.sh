@@ -96,8 +96,70 @@ check_status() {
     fi
 }
 
+download_https() {
+    local url="$1"
+    local destination="$2"
+
+    curl --fail --silent --show-error --location \
+        --proto '=https' --tlsv1.2 \
+        -o "$destination" "$url"
+}
+
+validate_release_version() {
+    local candidate="$1"
+    [[ "$candidate" =~ ^v?[0-9A-Za-z][0-9A-Za-z._-]*$ ]]
+}
+
+verify_release_checksum() {
+    local release_dir="$1"
+    local artifact_name="$2"
+    local checksum_file="${release_dir}/SHA256SUMS"
+    local expected
+
+    [[ -f "$checksum_file" ]] || return 1
+    expected=$(awk -v artifact="$artifact_name" '$2 == artifact || $2 == "*" artifact {print $1; exit}' "$checksum_file")
+    [[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || return 1
+    [[ -f "${release_dir}/${artifact_name}" ]] || return 1
+    printf '%s  %s\n' "$expected" "${release_dir}/${artifact_name}" | sha256sum -c - >/dev/null
+}
+
+download_release_artifact() {
+    local release_version="$1"
+    local artifact_name="$2"
+    local destination="$3"
+    local release_dir
+
+    release_dir=$(mktemp -d "${TMPDIR:-/tmp}/xrayr-release.XXXXXX") || return 1
+    if ! download_https "https://github.com/Mtoly/XrayRP/releases/download/${release_version}/${artifact_name}" "${release_dir}/${artifact_name}"; then
+        rm -rf -- "$release_dir"
+        return 1
+    fi
+    if ! download_https "https://github.com/Mtoly/XrayRP/releases/download/${release_version}/SHA256SUMS" "${release_dir}/SHA256SUMS"; then
+        rm -rf -- "$release_dir"
+        return 1
+    fi
+    if ! verify_release_checksum "$release_dir" "$artifact_name"; then
+        rm -rf -- "$release_dir"
+        return 1
+    fi
+    if ! cp -- "${release_dir}/${artifact_name}" "$destination"; then
+        rm -rf -- "$release_dir"
+        return 1
+    fi
+    rm -rf -- "$release_dir"
+}
+
 install_acme() {
-    curl https://get.acme.sh | sh
+    local script_file
+    script_file=$(mktemp "${TMPDIR:-/tmp}/xrayr-acme.XXXXXX") || return 1
+    if ! download_https "https://get.acme.sh" "$script_file"; then
+        rm -f -- "$script_file"
+        return 1
+    fi
+    sh "$script_file"
+    local result=$?
+    rm -f -- "$script_file"
+    return "$result"
 }
 
 install_XrayR() {
@@ -108,40 +170,48 @@ install_XrayR() {
     mkdir /usr/local/XrayR/ -p
 	cd /usr/local/XrayR/
 
-    if  [ $# == 0 ] ;then
-        last_version=$(curl -Ls "https://api.github.com/repos/Mtoly/XrayRP/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-        if [[ ! -n "$last_version" ]]; then
-            echo -e "${red}检测 XrayR 版本失败，可能是超出 Github API 限制，请稍后再试，或手动指定 XrayR 版本安装${plain}"
+    if [ $# == 0 ]; then
+        metadata_file=$(mktemp "${TMPDIR:-/tmp}/xrayr-release-metadata.XXXXXX") || exit 1
+        if ! download_https "https://api.github.com/repos/Mtoly/XrayRP/releases/latest" "$metadata_file"; then
+            rm -f -- "$metadata_file"
+            echo -e "${red}检测 XrayR 版本失败，请稍后再试，或手动指定 XrayR 版本安装${plain}"
+            exit 1
+        fi
+        last_version=$(grep '"tag_name":' "$metadata_file" | sed -E 's/.*"([^"]+)".*/\1/' | head -n 1)
+        rm -f -- "$metadata_file"
+        if [[ -z "$last_version" ]] || ! validate_release_version "$last_version"; then
+            echo -e "${red}检测到无效的 XrayR 发布版本${plain}"
             exit 1
         fi
         echo -e "检测到 XrayR 最新版本：${last_version}，开始安装"
-        wget -q -N --no-check-certificate -O /usr/local/XrayR/XrayR-linux.zip https://github.com/Mtoly/XrayRP/releases/download/${last_version}/XrayR-linux-${arch}.zip
-        if [[ $? -ne 0 ]]; then
-            echo -e "${red}下载 XrayR 失败，请确保你的服务器能够下载 Github 的文件${plain}"
-            exit 1
-        fi
     else
-        if [[ $1 == v* ]]; then
-            last_version=$1
-	else
-	    last_version="v"$1
-	fi
-        url="https://github.com/Mtoly/XrayRP/releases/download/${last_version}/XrayR-linux-${arch}.zip"
-        echo -e "开始安装 XrayR ${last_version}"
-        wget -q -N --no-check-certificate -O /usr/local/XrayR/XrayR-linux.zip ${url}
-        if [[ $? -ne 0 ]]; then
-            echo -e "${red}下载 XrayR ${last_version} 失败，请确保此版本存在${plain}"
+        last_version="$1"
+        [[ "$last_version" == v* ]] || last_version="v${last_version}"
+        if ! validate_release_version "$last_version"; then
+            echo -e "${red}XrayR 版本格式无效: ${last_version}${plain}"
             exit 1
         fi
+        echo -e "开始安装 XrayR ${last_version}"
+    fi
+
+    artifact_name="XrayR-linux-${arch}.zip"
+    if ! download_release_artifact "$last_version" "$artifact_name" "/usr/local/XrayR/XrayR-linux.zip"; then
+        echo -e "${red}下载或校验 XrayR ${last_version} 失败，请确保此版本存在且发布校验文件可用${plain}"
+        exit 1
     fi
 
     unzip XrayR-linux.zip
     rm XrayR-linux.zip -f
     chmod +x XrayR
     mkdir /etc/XrayR/ -p
-    rm /etc/systemd/system/XrayR.service -f
+    service_file=$(mktemp "${TMPDIR:-/tmp}/xrayr-service.XXXXXX") || exit 1
     file="https://raw.githubusercontent.com/Mtoly/XrayRPS/refs/heads/main/XrayR.service"
-    wget -q -N --no-check-certificate -O /etc/systemd/system/XrayR.service ${file}
+    if ! download_https "$file" "$service_file" || ! install -m 644 "$service_file" /etc/systemd/system/XrayR.service; then
+        rm -f -- "$service_file"
+        echo -e "${red}下载 XrayR systemd 服务文件失败${plain}"
+        exit 1
+    fi
+    rm -f -- "$service_file"
     #cp -f XrayR.service /etc/systemd/system/
     systemctl daemon-reload
     systemctl stop XrayR
@@ -181,8 +251,13 @@ install_XrayR() {
     if [[ ! -f /etc/XrayR/rulelist ]]; then
         cp rulelist /etc/XrayR/
     fi
-    curl -o /usr/bin/XrayR -Ls https://raw.githubusercontent.com/Mtoly/XrayRPS/main/XrayR.sh
-    chmod +x /usr/bin/XrayR
+    management_script=$(mktemp "${TMPDIR:-/tmp}/xrayr-management.XXXXXX") || exit 1
+    if ! download_https "https://raw.githubusercontent.com/Mtoly/XrayRPS/main/XrayR.sh" "$management_script" || ! install -m 755 "$management_script" /usr/bin/XrayR; then
+        rm -f -- "$management_script"
+        echo -e "${red}下载 XrayR 管理脚本失败${plain}"
+        exit 1
+    fi
+    rm -f -- "$management_script"
     ln -s /usr/bin/XrayR /usr/bin/xrayr # 小写兼容
     chmod +x /usr/bin/xrayr
     cd $cur_dir
