@@ -162,24 +162,47 @@ install_acme() {
     return "$result"
 }
 
-install_XrayR() {
-    if [[ -e /usr/local/XrayR/ ]]; then
-        rm /usr/local/XrayR/ -rf
+rollback_transaction() {
+    local install_dir="$1"
+    local backup_dir="$2"
+    local had_previous="$3"
+    local service_was_active="$4"
+    systemctl stop XrayR >/dev/null 2>&1 || true
+    rm -rf -- "$install_dir"
+    if [[ "$had_previous" == "true" && -d "$backup_dir" ]]; then
+        mv -- "$backup_dir" "$install_dir"
+        [[ "$service_was_active" == "true" ]] && systemctl start XrayR >/dev/null 2>&1 || true
     fi
+}
 
-    mkdir /usr/local/XrayR/ -p
-	cd /usr/local/XrayR/
+install_XrayR() {
+    local install_dir="/usr/local/XrayR"
+    local transaction_dir
+    local staged_install
+    local archive_file
+    local backup_dir
+    local had_previous="false"
+    local service_was_active="false"
+
+    check_status && service_was_active="true"
+    transaction_dir=$(mktemp -d "${TMPDIR:-/tmp}/xrayr-install.XXXXXX") || exit 1
+    staged_install="${transaction_dir}/new"
+    archive_file="${transaction_dir}/XrayR-linux.zip"
+    backup_dir="${transaction_dir}/previous"
+    mkdir -p "$staged_install"
 
     if [ $# == 0 ]; then
         metadata_file=$(mktemp "${TMPDIR:-/tmp}/xrayr-release-metadata.XXXXXX") || exit 1
         if ! download_https "https://api.github.com/repos/Mtoly/XrayRP/releases/latest" "$metadata_file"; then
             rm -f -- "$metadata_file"
+            rm -rf -- "$transaction_dir"
             echo -e "${red}检测 XrayR 版本失败，请稍后再试，或手动指定 XrayR 版本安装${plain}"
             exit 1
         fi
         last_version=$(grep '"tag_name":' "$metadata_file" | sed -E 's/.*"([^"]+)".*/\1/' | head -n 1)
         rm -f -- "$metadata_file"
         if [[ -z "$last_version" ]] || ! validate_release_version "$last_version"; then
+            rm -rf -- "$transaction_dir"
             echo -e "${red}检测到无效的 XrayR 发布版本${plain}"
             exit 1
         fi
@@ -188,6 +211,7 @@ install_XrayR() {
         last_version="$1"
         [[ "$last_version" == v* ]] || last_version="v${last_version}"
         if ! validate_release_version "$last_version"; then
+            rm -rf -- "$transaction_dir"
             echo -e "${red}XrayR 版本格式无效: ${last_version}${plain}"
             exit 1
         fi
@@ -195,26 +219,47 @@ install_XrayR() {
     fi
 
     artifact_name="XrayR-linux-${arch}.zip"
-    if ! download_release_artifact "$last_version" "$artifact_name" "/usr/local/XrayR/XrayR-linux.zip"; then
+    if ! download_release_artifact "$last_version" "$artifact_name" "$archive_file"; then
+        rm -rf -- "$transaction_dir"
         echo -e "${red}下载或校验 XrayR ${last_version} 失败，请确保此版本存在且发布校验文件可用${plain}"
         exit 1
     fi
 
-    unzip XrayR-linux.zip
-    rm XrayR-linux.zip -f
+    if ! unzip -oq "$archive_file" -d "$staged_install" || [[ ! -x "${staged_install}/XrayR" ]]; then
+        rm -rf -- "$transaction_dir"
+        echo -e "${red}XrayR 发布包解压或结构校验失败，保留现有安装${plain}"
+        exit 1
+    fi
+    if [[ -d "$install_dir" ]]; then
+        mv -- "$install_dir" "$backup_dir"
+        had_previous="true"
+    fi
+    if ! mv -- "$staged_install" "$install_dir"; then
+        [[ "$had_previous" == "true" ]] && mv -- "$backup_dir" "$install_dir"
+        rm -rf -- "$transaction_dir"
+        echo -e "${red}切换到新版本失败，已保留现有安装${plain}"
+        exit 1
+    fi
+    cd "$install_dir"
     chmod +x XrayR
     mkdir /etc/XrayR/ -p
-    service_file=$(mktemp "${TMPDIR:-/tmp}/xrayr-service.XXXXXX") || exit 1
+    service_file=$(mktemp "${TMPDIR:-/tmp}/xrayr-service.XXXXXX") || {
+        rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
+        rm -rf -- "$transaction_dir"
+        exit 1
+    }
     file="https://raw.githubusercontent.com/Mtoly/XrayRPS/refs/heads/main/XrayR.service"
     if ! download_https "$file" "$service_file" || ! install -m 644 "$service_file" /etc/systemd/system/XrayR.service; then
         rm -f -- "$service_file"
-        echo -e "${red}下载 XrayR systemd 服务文件失败${plain}"
+        rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
+        rm -rf -- "$transaction_dir"
+        echo -e "${red}下载 XrayR systemd 服务文件失败，已恢复之前的安装${plain}"
         exit 1
     fi
     rm -f -- "$service_file"
     #cp -f XrayR.service /etc/systemd/system/
     systemctl daemon-reload
-    systemctl stop XrayR
+    systemctl stop XrayR >/dev/null 2>&1 || true
     systemctl enable XrayR
     echo -e "${green}XrayR ${last_version}${plain} 安装完成，已设置开机自启"
     cp geoip.dat /etc/XrayR/
@@ -227,12 +272,14 @@ install_XrayR() {
     else
         systemctl start XrayR
         sleep 2
-        check_status
         echo -e ""
-        if [[ $? == 0 ]]; then
+        if check_status; then
             echo -e "${green}XrayR 重启成功${plain}"
         else
-            echo -e "${red}XrayR 可能启动失败，请稍后使用 XrayR log 查看日志信息，若无法启动，则可能更改了配置格式，请前往 wiki 查看：https://github.com/Mtoly/XrayR/wiki${plain}"
+            rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
+            rm -rf -- "$transaction_dir"
+            echo -e "${red}XrayR 启动失败，已恢复之前的安装${plain}"
+            exit 1
         fi
     fi
 
@@ -251,10 +298,16 @@ install_XrayR() {
     if [[ ! -f /etc/XrayR/rulelist ]]; then
         cp rulelist /etc/XrayR/
     fi
-    management_script=$(mktemp "${TMPDIR:-/tmp}/xrayr-management.XXXXXX") || exit 1
+    management_script=$(mktemp "${TMPDIR:-/tmp}/xrayr-management.XXXXXX") || {
+        rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
+        rm -rf -- "$transaction_dir"
+        exit 1
+    }
     if ! download_https "https://raw.githubusercontent.com/Mtoly/XrayRPS/main/XrayR.sh" "$management_script" || ! install -m 755 "$management_script" /usr/bin/XrayR; then
         rm -f -- "$management_script"
-        echo -e "${red}下载 XrayR 管理脚本失败${plain}"
+        rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
+        rm -rf -- "$transaction_dir"
+        echo -e "${red}下载 XrayR 管理脚本失败，已恢复之前的安装${plain}"
         exit 1
     fi
     rm -f -- "$management_script"

@@ -508,35 +508,75 @@ copy_default_config_file() {
     fi
 }
 
+rollback_installation() {
+    [[ "$transaction_active" == "true" ]] || return 0
+    systemctl stop XrayR >/dev/null 2>&1 || true
+    rm -rf -- "$install_dir"
+    if [[ "$transaction_had_previous" == "true" && -d "$transaction_backup" ]]; then
+        mv -- "$transaction_backup" "$install_dir"
+        systemctl start XrayR >/dev/null 2>&1 || true
+    fi
+    rm -rf -- "$transaction_dir"
+    transaction_active="false"
+}
+
+commit_installation() {
+    [[ "$transaction_active" == "true" ]] || return 0
+    rm -rf -- "$transaction_dir"
+    transaction_active="false"
+}
+
 download_and_install_release() {
     local download_url
-    local release_dir
     local artifact_name
+    local archive_file
+    local staged_install
 
     resolve_version
     artifact_name="XrayR-linux-${arch_name}.zip"
     download_url="https://github.com/${release_repo}/releases/download/${version}/${artifact_name}"
 
     info "Installing XrayRP ${version} (${arch_name})"
-    release_dir=$(mktemp -d "${TMPDIR:-/tmp}/xrayr-release.XXXXXX")
-    if ! download_https "$download_url" "${release_dir}/${artifact_name}"; then
-        rm -rf -- "$release_dir"
-        die "Failed to download release artifact"
+    transaction_dir=$(mktemp -d "${TMPDIR:-/tmp}/xrayr-install.XXXXXX")
+    archive_file="${transaction_dir}/${artifact_name}"
+    staged_install="${transaction_dir}/new"
+    transaction_backup="${transaction_dir}/previous"
+    mkdir -p "$staged_install"
+
+    if ! download_https "$download_url" "$archive_file"; then
+        rm -rf -- "$transaction_dir"
+        die "Failed to download XrayRP release"
     fi
-    if ! download_https "https://github.com/${release_repo}/releases/download/${version}/SHA256SUMS" "${release_dir}/SHA256SUMS"; then
-        rm -rf -- "$release_dir"
-        die "Failed to download release checksums"
+    if ! download_https "https://github.com/${release_repo}/releases/download/${version}/SHA256SUMS" "${transaction_dir}/SHA256SUMS"; then
+        rm -rf -- "$transaction_dir"
+        die "Failed to download XrayRP release checksums"
     fi
-    if ! verify_release_checksum "$release_dir" "$artifact_name"; then
-        rm -rf -- "$release_dir"
+    if ! verify_release_checksum "$transaction_dir" "$artifact_name"; then
+        rm -rf -- "$transaction_dir"
         die "Release checksum verification failed for ${artifact_name}"
     fi
+    if ! unzip -oq "$archive_file" -d "$staged_install"; then
+        rm -rf -- "$transaction_dir"
+        die "Failed to extract XrayRP release"
+    fi
+    [[ -x "${staged_install}/XrayR" ]] || {
+        rm -rf -- "$transaction_dir"
+        die "Release archive does not contain an executable XrayR binary"
+    }
 
-    rm -rf "$install_dir"
-    mkdir -p "$install_dir"
+    transaction_had_previous="false"
+    if [[ -d "$install_dir" ]]; then
+        mv -- "$install_dir" "$transaction_backup"
+        transaction_had_previous="true"
+    fi
+    if ! mv -- "$staged_install" "$install_dir"; then
+        [[ "$transaction_had_previous" == "true" ]] && mv -- "$transaction_backup" "$install_dir"
+        rm -rf -- "$transaction_dir"
+        die "Failed to activate the staged XrayRP release"
+    fi
+    transaction_active="true"
+    trap rollback_installation EXIT
     cd "$install_dir"
-    unzip -oq "${release_dir}/${artifact_name}"
-    rm -rf -- "$release_dir"
     chmod +x XrayR
 
     mkdir -p "$config_dir"
@@ -724,7 +764,12 @@ main() {
     install_management_script
     write_machine_config
     chown -R xrayr:xrayr "$install_dir" "$config_dir"
-    start_service
+    if ! start_service; then
+        rollback_installation
+        die "XrayR failed to start; the previous installation was restored"
+    fi
+    commit_installation
+    trap - EXIT
 
     info "XrayRP machine mode installation completed"
     print_next_steps
