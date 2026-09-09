@@ -403,29 +403,32 @@ resolve_version() {
     fi
 }
 
+ensure_service_account() {
+    if ! getent passwd xrayr >/dev/null 2>&1; then
+        useradd --system --home-dir /var/lib/xrayr --create-home \
+            --shell /usr/sbin/nologin --user-group xrayr
+    fi
+    install -d -o xrayr -g xrayr -m 0750 /var/lib/xrayr
+}
+
 install_service() {
-    cat > "$service_file" <<'EOF'
-[Unit]
-Description=XrayR Service
-After=network.target nss-lookup.target
-Wants=network.target
+    local service_source="${cur_dir}/XrayR.service"
 
-[Service]
-User=root
-Group=root
-Type=simple
-LimitAS=infinity
-LimitRSS=infinity
-LimitCORE=infinity
-LimitNOFILE=999999
-WorkingDirectory=/usr/local/XrayR/
-ExecStart=/usr/local/XrayR/XrayR --config /etc/XrayR/config.yml
-Restart=on-failure
-RestartSec=10
+    if [[ -f "$service_source" ]]; then
+        install -m 0644 "$service_source" "$service_file"
+        return
+    fi
 
-[Install]
-WantedBy=multi-user.target
-EOF
+    local service_tmp
+    service_tmp=$(mktemp "${TMPDIR:-/tmp}/xrayr-service.XXXXXX")
+    if ! curl --fail --silent --show-error --location \
+        --proto '=https' --tlsv1.2 \
+        -o "$service_tmp" "https://raw.githubusercontent.com/${script_repo}/${raw_branch}/XrayR.service"; then
+        rm -f -- "$service_tmp"
+        die "Failed to download XrayR systemd service file"
+    fi
+    install -m 0644 "$service_tmp" "$service_file"
+    rm -f -- "$service_tmp"
 }
 
 install_management_script() {
@@ -644,9 +647,11 @@ main() {
     install_base
     validate_machine
     download_and_install_release
+    ensure_service_account
     install_service
     install_management_script
     write_machine_config
+    chown -R xrayr:xrayr "$install_dir" "$config_dir"
     start_service
 
     info "XrayRP machine mode installation completed"

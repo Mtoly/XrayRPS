@@ -4,17 +4,30 @@ After=network.target nss-lookup.target
 Wants=network.target
 
 [Service]
-User=root
-Group=root
 Type=simple
-LimitAS=infinity
-LimitRSS=infinity
-LimitCORE=infinity
-LimitNOFILE=999999
+User=xrayr
+Group=xrayr
+UMask=027
 WorkingDirectory=/usr/local/XrayR/
 ExecStart=/usr/local/XrayR/XrayR --config /etc/XrayR/config.yml
 Restart=on-failure
 RestartSec=10
+LimitAS=infinity
+LimitRSS=infinity
+LimitCORE=0
+LimitNOFILE=999999
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/etc/XrayR /var/lib/xrayr
 
 [Install]
 WantedBy=multi-user.target
