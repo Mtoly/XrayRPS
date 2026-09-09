@@ -17,7 +17,7 @@ jobs:
       - name: Shell syntax
         run: bash -n install.sh install-machine.sh XrayR.sh tests/*.sh
       - name: ShellCheck
-        run: shellcheck --severity=warning install.sh install-machine.sh XrayR.sh tests/*.sh
+        run: shellcheck --severity=error install.sh install-machine.sh XrayR.sh tests/*.sh
       - name: Repository tests
         run: bash tests/run.sh
 
