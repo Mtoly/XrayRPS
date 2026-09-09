@@ -1,7 +1,7 @@
 services:
   xrayr:
     # Keep the image on a reviewed release; update this tag deliberately with a release review.
-    image: ghcr.io/Mtoly/xrayr:0.9.1-alpha-6
+    image: ghcr.io/mtoly/xrayr:0.9.1-alpha-6
     volumes:
       - ./config:/etc/XrayR:ro
     restart: unless-stopped
