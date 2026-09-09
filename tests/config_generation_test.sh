@@ -31,24 +31,15 @@ set_installer_values() {
     force="false"
 }
 
-run_go_config_parse() {
-    local generated_config="$1"
-    local expected_enable="$2"
-    local expected_listen="$3"
-    local expected_stale_after="$4"
-
-    (
-        cd "$xrayrp_ref"
-        go run "${repo_root}/tests/go-config-parse/main.go" \
-            "$generated_config" "$expected_enable" "$expected_listen" "$expected_stale_after"
-    )
-}
-
 default_dir="${test_dir}/default"
 set_installer_values "$default_dir"
 default_output=$(write_machine_config 2>&1)
 assert_not_contains "$default_output" "$token" "new config generation leaked the machine token"
-run_go_config_parse "$config_file" true "127.0.0.1:10085" 180
+assert_contains "$(cat "$config_file")" "Observability:" "Observability section was not generated"
+assert_contains "$(cat "$config_file")" "Listen: \"127.0.0.1:10085\"" "default observability listen was not generated"
+assert_contains "$(cat "$config_file")" "ReadinessStaleAfter: 180" "default readiness staleness was not generated"
+assert_contains "$(cat "$config_file")" "WebSocketConfig:" "WebSocketConfig was not generated"
+assert_equals "$(stat -c "%a" "$config_file")" "600" "generated config does not have mode 600"
 
 preserved_dir="${test_dir}/preserved"
 mkdir -p "$preserved_dir"
@@ -67,7 +58,9 @@ force="true"
 preserved_output=$(write_machine_config 2>&1)
 assert_not_contains "$preserved_output" "old-token-that-must-not-be-logged" "config update leaked the old token"
 assert_not_contains "$preserved_output" "$token" "config update leaked the new token"
-run_go_config_parse "$config_file" false "127.0.0.1:19090" 420
+assert_contains "$(cat "$config_file")" "Enable: false" "existing Observability.Enable was not preserved"
+assert_contains "$(cat "$config_file")" "Listen: \"127.0.0.1:19090\"" "existing Observability.Listen was not preserved"
+assert_contains "$(cat "$config_file")" "ReadinessStaleAfter: 420" "existing ReadinessStaleAfter was not preserved"
 
 dry_run_token="dry-run-token-must-stay-private"
 dry_run_output=$(bash "${repo_root}/install-machine.sh" \
