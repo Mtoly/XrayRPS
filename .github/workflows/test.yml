@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Shell syntax
+        run: bash -n install.sh install-machine.sh XrayR.sh tests/*.sh
+      - name: ShellCheck
+        run: shellcheck --severity=warning install.sh install-machine.sh XrayR.sh tests/*.sh
+      - name: Repository tests
+        run: bash tests/run.sh
+
+  config-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate JSON and YAML
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import yaml
+          for path in Path("config").glob("*.json"):
+              json.loads(path.read_text(encoding="utf-8"))
+          yaml.safe_load(Path("config/config.yml").read_text(encoding="utf-8"))
+          print("configuration parse passed")
+          PY
