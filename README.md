@@ -53,8 +53,8 @@ XrayR uninstall
 # Docker 安装
 
 ```
-docker pull ghcr.io/Mtoly/xrayr:0.9.1-alpha-6
-docker run --detach --restart=unless-stopped --name xrayr --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev --security-opt no-new-privileges:true --cap-drop=ALL --volume "${PATH_TO_CONFIG}/config.yml:/etc/XrayR/config.yml:ro" --network=host ghcr.io/Mtoly/xrayr:0.9.1-alpha-6
+docker pull ghcr.io/mtoly/xrayr:0.9.1-alpha-6
+docker run --detach --restart=unless-stopped --name xrayr --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev --security-opt no-new-privileges:true --cap-drop=ALL --volume "${PATH_TO_CONFIG}/config.yml:/etc/XrayR/config.yml:ro" --network=host ghcr.io/mtoly/xrayr:0.9.1-alpha-6
 ```
 
 # Docker compose 安装
