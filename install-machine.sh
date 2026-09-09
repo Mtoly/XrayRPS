@@ -199,6 +199,24 @@ validate_number() {
     (( value > 0 )) || die "${flag} must be greater than 0"
 }
 
+validate_ip() {
+    local flag="$1"
+    local value="$2"
+    local octet
+    local -a octets
+
+    if [[ "$value" == *:* ]]; then
+        [[ "$value" =~ ^[0-9A-Fa-f:.]+$ ]] || die "${flag} must be a valid IP address"
+        return
+    fi
+
+    IFS='.' read -r -a octets <<< "$value"
+    [[ "${#octets[@]}" -eq 4 ]] || die "${flag} must be a valid IP address"
+    for octet in "${octets[@]}"; do
+        [[ "$octet" =~ ^[0-9]+$ ]] && (( octet <= 255 )) || die "${flag} must be a valid IP address"
+    done
+}
+
 validate_args() {
     [[ -n "$api_host" ]] || die "--api-host is required"
     [[ -n "$machine_id" ]] || die "--machine-id is required"
@@ -213,6 +231,8 @@ validate_args() {
     validate_number "--discovery-interval" "$discovery_interval"
     validate_number "--heartbeat-interval" "$heartbeat_interval"
     validate_number "--reconnect-backoff" "$reconnect_backoff"
+    validate_ip "--listen-ip" "$listen_ip"
+    validate_ip "--send-ip" "$send_ip"
     resync_on_reconnect=$(parse_bool "--resync-on-reconnect" "$resync_on_reconnect")
 
     if [[ "$version" != "latest" ]]; then
@@ -607,8 +627,8 @@ MachineConfig:
   Timeout: ${timeout}
   DiscoveryInterval: ${discovery_interval}
   ControllerConfig:
-    ListenIP: ${escaped_listen_ip}
-    SendIP: ${escaped_send_ip}
+    ListenIP: "${escaped_listen_ip}"
+    SendIP: "${escaped_send_ip}"
     UpdatePeriodic: ${discovery_interval}
     WebSocketConfig:
       Enable: ${enable_ws}

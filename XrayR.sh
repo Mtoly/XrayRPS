@@ -142,7 +142,7 @@ update() {
 
 config() {
     echo "XrayR在修改配置后会自动尝试重启"
-    vi /etc/XrayR/config.yml
+    vi "$config_file"
     sleep 2
     check_status
     case $? in
