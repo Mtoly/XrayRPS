@@ -5,8 +5,8 @@ Wants=network.target
 
 [Service]
 Type=simple
-User=xrayr
-Group=xrayr
+User=root
+Group=root
 UMask=027
 WorkingDirectory=/usr/local/XrayR/
 ExecStart=/usr/local/XrayR/XrayR --config /etc/XrayR/config.yml
