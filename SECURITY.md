@@ -18,7 +18,7 @@ Security fixes target the maintained default branch and the newest reviewed rele
 
 - Download installers and release metadata over HTTPS with certificate validation enabled.
 - Verify release archives against the matching `SHA256SUMS` file before activation.
-- Run the systemd unit as the dedicated `xrayr` account with the sandboxing options in `XrayR.service`.
+- Run the systemd unit as `root:root` for compatibility with machine nodes that bind TCP 80/443, while retaining the sandboxing and filesystem restrictions in `XrayR.service`.
 - Mount container configuration read-only, pin the image tag, drop capabilities, and enable no-new-privileges.
 - Keep custom inbounds on loopback until authentication, ports, and exposure have been reviewed.
 - Back up configuration and retain the previous installation during upgrades.

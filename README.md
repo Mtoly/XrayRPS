@@ -17,92 +17,43 @@ bash install.sh
 rm -f install.sh
 ```
 
-## systemd 服务账户与升级
+## systemd root 兼容模式与升级
 
-当前 `XrayR.service` 使用专用的 `xrayr` 用户和组运行。早期版本的服务使用 `root:root`；直接升级早期安装时，安装器会在写入新服务文件之前幂等创建或修复 `xrayr` 账户。标准安装、`XrayR update` 和机器模式安装均执行同一账户检查，账户创建失败时安装会明确失败并回滚，不会继续启动服务。
+`XrayR.service` 明确使用 `root:root` 运行。2026-09-12 引入的专用 `xrayr` 服务账户方案会在账户未建立时触发 `status=217/USER`，并使需要监听 TCP 80/443 的 machine node 因低端口权限不足而启动失败，因此已进行兼容性回退。现有 systemd 沙箱和文件系统防护选项继续保留，不通过额外 capability 绕过低端口限制。
 
-安装器保留现有 `/etc/XrayR/config.yml` 和升级数据，并设置以下权限：
+标准安装、`XrayR update`、重装和 machine mode 安装均不再创建、检查或依赖 `xrayr` 用户与用户组，也不会主动删除服务器上已经存在的账户。升级会保留 `/etc/XrayR` 下的配置、证书和已有数据，并将以下路径恢复为 `root:root`：
 
-- `/usr/local/XrayR`：`root:xrayr`，目录 `0750`，普通文件 `0640`，`XrayR` 二进制 `0750`；
-- `/etc/XrayR`（包括证书子目录）：`xrayr:xrayr`，目录 `0750`，文件 `0640`；
-- `/var/lib/xrayr`：`xrayr:xrayr`，目录 `0750`。
+- `/usr/local/XrayR`；
+- `/etc/XrayR`，包括证书子目录；
+- `/var/lib/xrayr`。
 
-### 恢复 `status=217/USER`
+### 恢复现有故障服务器
 
-现有服务器如出现 `Failed at step USER` 或 `status=217/USER`，以具有 sudo 权限的账户执行：
+如服务器出现 `status=217/USER` 或 `bind: permission denied`，执行：
 
 ```bash
-sudo sh -s <<'EOF'
-set -eu
+sudo sed -i -E \
+  -e 's/^User=.*/User=root/' \
+  -e 's/^Group=.*/Group=root/' \
+  /etc/systemd/system/XrayR.service
 
-group_exists() {
-  if command -v getent >/dev/null 2>&1; then
-    getent group xrayr >/dev/null 2>&1
-  else
-    grep -q '^xrayr:' /etc/group
-  fi
-}
+sudo install -d -o root -g root -m 0750 /etc/XrayR /var/lib/xrayr
+sudo chown -R root:root /usr/local/XrayR /etc/XrayR /var/lib/xrayr
+sudo find /usr/local/XrayR /etc/XrayR /var/lib/xrayr -type d -exec chmod 0750 {} +
+sudo find /usr/local/XrayR /etc/XrayR /var/lib/xrayr -type f -exec chmod 0640 {} +
+sudo chmod 0750 /usr/local/XrayR/XrayR
 
-user_exists() {
-  if command -v getent >/dev/null 2>&1; then
-    getent passwd xrayr >/dev/null 2>&1
-  else
-    id xrayr >/dev/null 2>&1
-  fi
-}
+sudo systemctl daemon-reload
+sudo systemctl reset-failed XrayR
+sudo systemctl restart XrayR
 
-if ! group_exists; then
-  if command -v groupadd >/dev/null 2>&1; then
-    groupadd --system xrayr
-  elif command -v addgroup >/dev/null 2>&1; then
-    if addgroup --help 2>&1 | grep -q BusyBox; then
-      addgroup -S xrayr
-    else
-      addgroup --system xrayr
-    fi
-  else
-    echo 'No supported group creation command found' >&2
-    exit 1
-  fi
-fi
-
-if ! user_exists; then
-  nologin=/bin/false
-  [ ! -x /usr/sbin/nologin ] || nologin=/usr/sbin/nologin
-  [ ! -x /sbin/nologin ] || nologin=/sbin/nologin
-  if command -v useradd >/dev/null 2>&1; then
-    useradd --system --gid xrayr --home-dir /var/lib/xrayr \
-      --no-create-home --shell "$nologin" xrayr
-  elif command -v adduser >/dev/null 2>&1; then
-    if adduser --help 2>&1 | grep -q BusyBox; then
-      adduser -S -D -H -h /var/lib/xrayr -s "$nologin" \
-        -G xrayr -g xrayr xrayr
-    else
-      adduser --system --ingroup xrayr --home /var/lib/xrayr \
-        --no-create-home --shell "$nologin" xrayr
-    fi
-  else
-    echo 'No supported user creation command found' >&2
-    exit 1
-  fi
-fi
-
-group_exists && user_exists
-install -d -o xrayr -g xrayr -m 0750 /var/lib/xrayr /etc/XrayR
-chown -R root:xrayr /usr/local/XrayR
-find /usr/local/XrayR -type d -exec chmod 0750 {} +
-find /usr/local/XrayR -type f -exec chmod 0640 {} +
-chmod 0750 /usr/local/XrayR/XrayR
-chown -R xrayr:xrayr /etc/XrayR
-find /etc/XrayR -type d -exec chmod 0750 {} +
-find /etc/XrayR -type f -exec chmod 0640 {} +
-systemctl daemon-reload
-systemctl reset-failed XrayR || true
-systemctl restart XrayR
-systemctl show XrayR -p User -p Group --no-pager
-systemctl status XrayR --no-pager
-EOF
+sudo systemctl show XrayR -p User -p Group -p ActiveState -p SubState --no-pager
+sudo systemctl status XrayR --no-pager
+sudo journalctl -u XrayR -n 100 --no-pager
+sudo ss -ltnp | grep -E ':(80|443)([[:space:]]|$)'
 ```
+
+恢复过程不会删除已有的 `xrayr` 用户或用户组。
 
 # Xboard Machine Mode 一键安装
 
@@ -248,7 +199,7 @@ docker compose ps
 ## 安全基线与恢复
 
 - 生产环境固定发布版本并保存对应的 `SHA256SUMS` 与部署记录。
-- systemd 部署使用专用 `xrayr` 服务账号；容器部署使用只读配置挂载、只读根文件系统和能力收敛。
+- systemd 部署使用 `root:root` 兼容模式以支持 TCP 80/443，并继续启用 `XrayR.service` 中的沙箱防护；容器部署使用只读配置挂载、只读根文件系统和能力收敛。
 - `config/custom_inbound.json` 仅作为本地示例，启用前必须替换凭据并确认监听地址。
 - 更新失败时保留上一版本目录和配置备份；先停止服务，再恢复上一版本并检查 `systemctl status XrayR` 或 `docker compose ps`。
 - 漏洞报告与敏感信息处理流程见 [`SECURITY.md`](SECURITY.md)。

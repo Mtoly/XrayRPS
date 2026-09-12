@@ -462,138 +462,24 @@ verify_release_checksum() {
     printf '%s  %s\n' "$expected" "${release_dir}/${artifact_name}" | sha256sum -c - >/dev/null
 }
 
-service_user_exists() {
-    local account_name="${1:-xrayr}"
-    if command -v getent >/dev/null 2>&1; then
-        getent passwd "$account_name" >/dev/null 2>&1
-    else
-        id "$account_name" >/dev/null 2>&1
-    fi
-}
-
-service_group_exists() {
-    local group_name="${1:-xrayr}"
-    if command -v getent >/dev/null 2>&1; then
-        getent group "$group_name" >/dev/null 2>&1
-    else
-        grep -qE "^${group_name}:" /etc/group
-    fi
-}
-
-service_nologin_shell() {
-    local shell_path
-    for shell_path in /usr/sbin/nologin /sbin/nologin /bin/false; do
-        if [[ -x "$shell_path" ]]; then
-            printf '%s' "$shell_path"
-            return 0
-        fi
-    done
-    printf '%s' /bin/false
-}
-
-command_is_busybox() {
-    local command_name="$1"
-    local help_text
-    help_text=$("$command_name" --help 2>&1 || true)
-    [[ "$help_text" == *BusyBox* ]]
-}
-
-create_service_group() {
-    local group_name="$1"
-
-    if command -v groupadd >/dev/null 2>&1 && groupadd --system "$group_name"; then
-        return 0
-    fi
-    if command -v addgroup >/dev/null 2>&1; then
-        if command_is_busybox addgroup; then
-            addgroup -S "$group_name"
-        else
-            addgroup --system "$group_name"
-        fi
-        return $?
-    fi
-
-    echo "Error: neither groupadd nor addgroup could create ${group_name}" >&2
-    return 1
-}
-
-create_service_user() {
-    local account_name="$1"
-    local group_name="$2"
-    local home_dir="$3"
-    local login_shell="$4"
-    if command -v useradd >/dev/null 2>&1 && useradd --system --gid "$group_name" \
-        --home-dir "$home_dir" --no-create-home --shell "$login_shell" "$account_name"; then
-        return 0
-    fi
-    if command -v adduser >/dev/null 2>&1; then
-        if command_is_busybox adduser; then
-            adduser -S -D -H -h "$home_dir" -s "$login_shell" \
-                -G "$group_name" -g "$account_name" "$account_name"
-        else
-            adduser --system --ingroup "$group_name" --home "$home_dir" \
-                --no-create-home --shell "$login_shell" "$account_name"
-        fi
-        return $?
-    fi
-
-    echo "Error: neither useradd nor adduser could create ${account_name}" >&2
-    return 1
-}
-
-ensure_service_account() {
-    local account_name="${XRAYR_SERVICE_USER:-xrayr}"
-    local group_name="${XRAYR_SERVICE_GROUP:-xrayr}"
-    local home_dir="${XRAYR_SERVICE_HOME:-/var/lib/xrayr}"
-    local login_shell
-    login_shell=$(service_nologin_shell)
-
-    if ! service_group_exists "$group_name"; then
-        if ! create_service_group "$group_name" && ! service_group_exists "$group_name"; then
-            echo "Error: failed to create service group ${group_name}" >&2
-            return 1
-        fi
-    fi
-    if ! service_group_exists "$group_name"; then
-        echo "Error: service group ${group_name} is unavailable" >&2
-        return 1
-    fi
-
-    if ! service_user_exists "$account_name"; then
-        if ! create_service_user "$account_name" "$group_name" "$home_dir" "$login_shell" && \
-            ! service_user_exists "$account_name"; then
-            echo "Error: failed to create service user ${account_name}" >&2
-            return 1
-        fi
-    fi
-    if ! service_user_exists "$account_name"; then
-        echo "Error: service user ${account_name} is unavailable" >&2
-        return 1
-    fi
-
-    if ! install -d -o "$account_name" -g "$group_name" -m 0750 "$home_dir"; then
-        echo "Error: failed to prepare service home ${home_dir}" >&2
-        return 1
-    fi
-}
-
 ensure_service_permissions() {
-    local account_name="${XRAYR_SERVICE_USER:-xrayr}"
-    local group_name="${XRAYR_SERVICE_GROUP:-xrayr}"
-    local home_dir="${XRAYR_SERVICE_HOME:-/var/lib/xrayr}"
+    local state_dir="${XRAYR_STATE_DIR:-/var/lib/xrayr}"
     local runtime_dir="${XRAYR_INSTALL_DIR:-/usr/local/XrayR}"
     local settings_dir="${XRAYR_CONFIG_DIR:-/etc/XrayR}"
 
-    install -d -o "$account_name" -g "$group_name" -m 0750 "$home_dir" "$settings_dir" || return 1
+    install -d -o root -g root -m 0750 "$state_dir" "$settings_dir" || return 1
     if [[ -d "$runtime_dir" ]]; then
-        chown -R "root:${group_name}" "$runtime_dir" || return 1
+        chown -R root:root "$runtime_dir" || return 1
         find "$runtime_dir" -type d -exec chmod 0750 {} + || return 1
         find "$runtime_dir" -type f -exec chmod 0640 {} + || return 1
         [[ ! -f "$runtime_dir/XrayR" ]] || chmod 0750 "$runtime_dir/XrayR" || return 1
     fi
-    chown -R "${account_name}:${group_name}" "$settings_dir" || return 1
+    chown -R root:root "$settings_dir" || return 1
+    chown -R root:root "$state_dir" || return 1
     find "$settings_dir" -type d -exec chmod 0750 {} + || return 1
     find "$settings_dir" -type f -exec chmod 0640 {} + || return 1
+    find "$state_dir" -type d -exec chmod 0750 {} + || return 1
+    find "$state_dir" -type f -exec chmod 0640 {} + || return 1
 }
 
 install_service() {
@@ -889,16 +775,12 @@ main() {
     install_base
     validate_machine
     download_and_install_release
-    if ! ensure_service_account; then
-        rollback_installation
-        die "Failed to create or repair the XrayR service account"
-    fi
     install_service
     install_management_script
     write_machine_config
     if ! ensure_service_permissions; then
         rollback_installation
-        die "Failed to set XrayR service account permissions"
+        die "Failed to set root-owned XrayR service permissions"
     fi
     if ! start_service; then
         rollback_installation
