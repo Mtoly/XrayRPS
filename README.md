@@ -17,6 +17,93 @@ bash install.sh
 rm -f install.sh
 ```
 
+## systemd 服务账户与升级
+
+当前 `XrayR.service` 使用专用的 `xrayr` 用户和组运行。早期版本的服务使用 `root:root`；直接升级早期安装时，安装器会在写入新服务文件之前幂等创建或修复 `xrayr` 账户。标准安装、`XrayR update` 和机器模式安装均执行同一账户检查，账户创建失败时安装会明确失败并回滚，不会继续启动服务。
+
+安装器保留现有 `/etc/XrayR/config.yml` 和升级数据，并设置以下权限：
+
+- `/usr/local/XrayR`：`root:xrayr`，目录 `0750`，普通文件 `0640`，`XrayR` 二进制 `0750`；
+- `/etc/XrayR`（包括证书子目录）：`xrayr:xrayr`，目录 `0750`，文件 `0640`；
+- `/var/lib/xrayr`：`xrayr:xrayr`，目录 `0750`。
+
+### 恢复 `status=217/USER`
+
+现有服务器如出现 `Failed at step USER` 或 `status=217/USER`，以具有 sudo 权限的账户执行：
+
+```bash
+sudo sh -s <<'EOF'
+set -eu
+
+group_exists() {
+  if command -v getent >/dev/null 2>&1; then
+    getent group xrayr >/dev/null 2>&1
+  else
+    grep -q '^xrayr:' /etc/group
+  fi
+}
+
+user_exists() {
+  if command -v getent >/dev/null 2>&1; then
+    getent passwd xrayr >/dev/null 2>&1
+  else
+    id xrayr >/dev/null 2>&1
+  fi
+}
+
+if ! group_exists; then
+  if command -v groupadd >/dev/null 2>&1; then
+    groupadd --system xrayr
+  elif command -v addgroup >/dev/null 2>&1; then
+    if addgroup --help 2>&1 | grep -q BusyBox; then
+      addgroup -S xrayr
+    else
+      addgroup --system xrayr
+    fi
+  else
+    echo 'No supported group creation command found' >&2
+    exit 1
+  fi
+fi
+
+if ! user_exists; then
+  nologin=/bin/false
+  [ ! -x /usr/sbin/nologin ] || nologin=/usr/sbin/nologin
+  [ ! -x /sbin/nologin ] || nologin=/sbin/nologin
+  if command -v useradd >/dev/null 2>&1; then
+    useradd --system --gid xrayr --home-dir /var/lib/xrayr \
+      --no-create-home --shell "$nologin" xrayr
+  elif command -v adduser >/dev/null 2>&1; then
+    if adduser --help 2>&1 | grep -q BusyBox; then
+      adduser -S -D -H -h /var/lib/xrayr -s "$nologin" \
+        -G xrayr -g xrayr xrayr
+    else
+      adduser --system --ingroup xrayr --home /var/lib/xrayr \
+        --no-create-home --shell "$nologin" xrayr
+    fi
+  else
+    echo 'No supported user creation command found' >&2
+    exit 1
+  fi
+fi
+
+group_exists && user_exists
+install -d -o xrayr -g xrayr -m 0750 /var/lib/xrayr /etc/XrayR
+chown -R root:xrayr /usr/local/XrayR
+find /usr/local/XrayR -type d -exec chmod 0750 {} +
+find /usr/local/XrayR -type f -exec chmod 0640 {} +
+chmod 0750 /usr/local/XrayR/XrayR
+chown -R xrayr:xrayr /etc/XrayR
+find /etc/XrayR -type d -exec chmod 0750 {} +
+find /etc/XrayR -type f -exec chmod 0640 {} +
+systemctl daemon-reload
+systemctl reset-failed XrayR || true
+systemctl restart XrayR
+systemctl show XrayR -p User -p Group --no-pager
+systemctl status XrayR --no-pager
+EOF
+```
+
 # Xboard Machine Mode 一键安装
 
 此安装脚本只生成 XrayRP `MachineConfig` 并安装/启动 XrayR 服务，不会在 Xboard 中创建或注册机器。请先在 Xboard 创建/绑定机器，并复制对应的 `MachineID` 和 `Token`。

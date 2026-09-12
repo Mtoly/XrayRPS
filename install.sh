@@ -6,12 +6,18 @@ yellow='\033[0;33m'
 plain='\033[0m'
 
 cur_dir=$(pwd)
+install_dir="${XRAYR_INSTALL_DIR:-/usr/local/XrayR}"
+config_dir="${XRAYR_CONFIG_DIR:-/etc/XrayR}"
+service_file="${XRAYR_SERVICE_FILE:-/etc/systemd/system/XrayR.service}"
 
+if [[ "${XRAYR_TEST_MODE:-0}" != "1" ]]; then
 # check root
 [[ $EUID -ne 0 ]] && echo -e "${red}错误：${plain} 必须使用root用户运行此脚本！\n" && exit 1
 
 # check os
-if [[ -f /etc/redhat-release ]]; then
+if [[ -f /etc/alpine-release ]]; then
+    release="alpine"
+elif [[ -f /etc/redhat-release ]]; then
     release="centos"
 elif cat /etc/issue | grep -Eqi "debian"; then
     release="debian"
@@ -72,11 +78,14 @@ elif [[ x"${release}" == x"debian" ]]; then
         echo -e "${red}请使用 Debian 8 或更高版本的系统！${plain}\n" && exit 1
     fi
 fi
+fi
 
 install_base() {
     if [[ x"${release}" == x"centos" ]]; then
         yum install epel-release -y
         yum install wget curl unzip tar crontabs socat -y
+    elif [[ x"${release}" == x"alpine" ]]; then
+        apk add --no-cache wget curl unzip tar dcron socat
     else
         apt update -y
         apt install wget curl unzip tar cron socat -y
@@ -149,6 +158,141 @@ download_release_artifact() {
     rm -rf -- "$release_dir"
 }
 
+service_user_exists() {
+    local account_name="${1:-xrayr}"
+    if command -v getent >/dev/null 2>&1; then
+        getent passwd "$account_name" >/dev/null 2>&1
+    else
+        id "$account_name" >/dev/null 2>&1
+    fi
+}
+
+service_group_exists() {
+    local group_name="${1:-xrayr}"
+    if command -v getent >/dev/null 2>&1; then
+        getent group "$group_name" >/dev/null 2>&1
+    else
+        grep -qE "^${group_name}:" /etc/group
+    fi
+}
+
+service_nologin_shell() {
+    local shell_path
+    for shell_path in /usr/sbin/nologin /sbin/nologin /bin/false; do
+        if [[ -x "$shell_path" ]]; then
+            printf '%s' "$shell_path"
+            return 0
+        fi
+    done
+    printf '%s' /bin/false
+}
+
+command_is_busybox() {
+    local command_name="$1"
+    local help_text
+    help_text=$("$command_name" --help 2>&1 || true)
+    [[ "$help_text" == *BusyBox* ]]
+}
+
+create_service_group() {
+    local group_name="$1"
+
+    if command -v groupadd >/dev/null 2>&1 && groupadd --system "$group_name"; then
+        return 0
+    fi
+    if command -v addgroup >/dev/null 2>&1; then
+        if command_is_busybox addgroup; then
+            addgroup -S "$group_name"
+        else
+            addgroup --system "$group_name"
+        fi
+        return $?
+    fi
+
+    echo "Error: neither groupadd nor addgroup could create ${group_name}" >&2
+    return 1
+}
+
+create_service_user() {
+    local account_name="$1"
+    local group_name="$2"
+    local home_dir="$3"
+    local login_shell="$4"
+    if command -v useradd >/dev/null 2>&1 && useradd --system --gid "$group_name" \
+        --home-dir "$home_dir" --no-create-home --shell "$login_shell" "$account_name"; then
+        return 0
+    fi
+    if command -v adduser >/dev/null 2>&1; then
+        if command_is_busybox adduser; then
+            adduser -S -D -H -h "$home_dir" -s "$login_shell" \
+                -G "$group_name" -g "$account_name" "$account_name"
+        else
+            adduser --system --ingroup "$group_name" --home "$home_dir" \
+                --no-create-home --shell "$login_shell" "$account_name"
+        fi
+        return $?
+    fi
+
+    echo "Error: neither useradd nor adduser could create ${account_name}" >&2
+    return 1
+}
+
+ensure_service_account() {
+    local account_name="${XRAYR_SERVICE_USER:-xrayr}"
+    local group_name="${XRAYR_SERVICE_GROUP:-xrayr}"
+    local home_dir="${XRAYR_SERVICE_HOME:-/var/lib/xrayr}"
+    local login_shell
+    login_shell=$(service_nologin_shell)
+
+    if ! service_group_exists "$group_name"; then
+        if ! create_service_group "$group_name" && ! service_group_exists "$group_name"; then
+            echo "Error: failed to create service group ${group_name}" >&2
+            return 1
+        fi
+    fi
+    if ! service_group_exists "$group_name"; then
+        echo "Error: service group ${group_name} is unavailable" >&2
+        return 1
+    fi
+
+    if ! service_user_exists "$account_name"; then
+        if ! create_service_user "$account_name" "$group_name" "$home_dir" "$login_shell" && \
+            ! service_user_exists "$account_name"; then
+            echo "Error: failed to create service user ${account_name}" >&2
+            return 1
+        fi
+    fi
+    if ! service_user_exists "$account_name"; then
+        echo "Error: service user ${account_name} is unavailable" >&2
+        return 1
+    fi
+
+    if ! install -d -o "$account_name" -g "$group_name" -m 0750 "$home_dir"; then
+        echo "Error: failed to prepare service home ${home_dir}" >&2
+        return 1
+    fi
+}
+
+ensure_service_permissions() {
+    local account_name="${XRAYR_SERVICE_USER:-xrayr}"
+    local group_name="${XRAYR_SERVICE_GROUP:-xrayr}"
+    local home_dir="${XRAYR_SERVICE_HOME:-/var/lib/xrayr}"
+    local runtime_dir="${XRAYR_INSTALL_DIR:-/usr/local/XrayR}"
+    local settings_dir="${XRAYR_CONFIG_DIR:-/etc/XrayR}"
+
+    install -d -o "$account_name" -g "$group_name" -m 0750 "$home_dir" "$settings_dir" || return 1
+    if [[ -d "$runtime_dir" ]]; then
+        chown -R "root:${group_name}" "$runtime_dir" || return 1
+        find "$runtime_dir" -type d -exec chmod 0750 {} + || return 1
+        find "$runtime_dir" -type f -exec chmod 0640 {} + || return 1
+        [[ ! -f "$runtime_dir/XrayR" ]] || chmod 0750 "$runtime_dir/XrayR" || return 1
+    fi
+    chown -R "${account_name}:${group_name}" "$settings_dir" || return 1
+    find "$settings_dir" -type d -exec chmod 0750 {} + || return 1
+    find "$settings_dir" -type f -exec chmod 0640 {} + || return 1
+}
+
+
 install_acme() {
     local script_file
     script_file=$(mktemp "${TMPDIR:-/tmp}/xrayr-acme.XXXXXX") || return 1
@@ -176,14 +320,21 @@ rollback_transaction() {
 }
 
 install_XrayR() {
-    local install_dir="/usr/local/XrayR"
     local transaction_dir
     local staged_install
     local archive_file
     local backup_dir
+    local metadata_file
+    local last_version
+    local artifact_name
+    local service_tmp
+    local file
+    local management_script
     local had_previous="false"
     local service_was_active="false"
+    local had_config="false"
 
+    [[ -f "${config_dir}/config.yml" ]] && had_config="true"
     check_status && service_was_active="true"
     transaction_dir=$(mktemp -d "${TMPDIR:-/tmp}/xrayr-install.XXXXXX") || exit 1
     staged_install="${transaction_dir}/new"
@@ -242,35 +393,80 @@ install_XrayR() {
     fi
     cd "$install_dir"
     chmod +x XrayR
-    mkdir /etc/XrayR/ -p
-    service_file=$(mktemp "${TMPDIR:-/tmp}/xrayr-service.XXXXXX") || {
+    if ! ensure_service_account; then
+        rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
+        rm -rf -- "$transaction_dir"
+        echo -e "${red}创建 XrayR 服务账户失败，已恢复之前的安装${plain}"
+        exit 1
+    fi
+    mkdir -p "$config_dir"
+    service_tmp=$(mktemp "${TMPDIR:-/tmp}/xrayr-service.XXXXXX") || {
         rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
         rm -rf -- "$transaction_dir"
         exit 1
     }
     file="https://raw.githubusercontent.com/Mtoly/XrayRPS/refs/heads/main/XrayR.service"
-    if ! download_https "$file" "$service_file" || ! install -m 644 "$service_file" /etc/systemd/system/XrayR.service; then
-        rm -f -- "$service_file"
+    if ! download_https "$file" "$service_tmp" || ! install -m 0644 "$service_tmp" "$service_file"; then
+        rm -f -- "$service_tmp"
         rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
         rm -rf -- "$transaction_dir"
         echo -e "${red}下载 XrayR systemd 服务文件失败，已恢复之前的安装${plain}"
         exit 1
     fi
-    rm -f -- "$service_file"
-    #cp -f XrayR.service /etc/systemd/system/
-    systemctl daemon-reload
-    systemctl stop XrayR >/dev/null 2>&1 || true
-    systemctl enable XrayR
-    echo -e "${green}XrayR ${last_version}${plain} 安装完成，已设置开机自启"
-    cp geoip.dat /etc/XrayR/
-    cp geosite.dat /etc/XrayR/ 
+    rm -f -- "$service_tmp"
+    [[ -f geoip.dat ]] && cp -f geoip.dat "${config_dir}/"
+    [[ -f geosite.dat ]] && cp -f geosite.dat "${config_dir}/"
 
-    if [[ ! -f /etc/XrayR/config.yml ]]; then
-        cp config.yml /etc/XrayR/
+    if [[ "$had_config" != "true" ]]; then
+        cp config.yml "${config_dir}/"
         echo -e ""
         echo -e "全新安装，请先参看教程：https://github.com/Mtoly/XrayR，配置必要的内容"
-    else
-        systemctl start XrayR
+    fi
+
+    if [[ ! -f "${config_dir}/dns.json" ]]; then
+        cp dns.json "${config_dir}/"
+    fi
+    if [[ ! -f "${config_dir}/route.json" ]]; then
+        cp route.json "${config_dir}/"
+    fi
+    if [[ ! -f "${config_dir}/custom_outbound.json" ]]; then
+        cp custom_outbound.json "${config_dir}/"
+    fi
+    if [[ ! -f "${config_dir}/custom_inbound.json" ]]; then
+        cp custom_inbound.json "${config_dir}/"
+    fi
+    if [[ ! -f "${config_dir}/rulelist" ]]; then
+        cp rulelist "${config_dir}/"
+    fi
+    if ! ensure_service_permissions; then
+        rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
+        rm -rf -- "$transaction_dir"
+        echo -e "${red}设置 XrayR 文件权限失败，已恢复之前的安装${plain}"
+        exit 1
+    fi
+
+    if ! systemctl daemon-reload; then
+        rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
+        rm -rf -- "$transaction_dir"
+        echo -e "${red}重新加载 systemd 配置失败，已恢复之前的安装${plain}"
+        exit 1
+    fi
+    systemctl stop XrayR >/dev/null 2>&1 || true
+    if ! systemctl enable XrayR; then
+        rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
+        rm -rf -- "$transaction_dir"
+        echo -e "${red}更新 XrayR systemd 服务失败，已恢复之前的安装${plain}"
+        exit 1
+    fi
+    echo -e "${green}XrayR ${last_version}${plain} 安装完成，已设置开机自启"
+
+    if [[ "$had_config" == "true" ]]; then
+        if ! systemctl start XrayR; then
+            rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
+            rm -rf -- "$transaction_dir"
+            echo -e "${red}XrayR 启动失败，已恢复之前的安装${plain}"
+            exit 1
+        fi
         sleep 2
         echo -e ""
         if check_status; then
@@ -283,21 +479,6 @@ install_XrayR() {
         fi
     fi
 
-    if [[ ! -f /etc/XrayR/dns.json ]]; then
-        cp dns.json /etc/XrayR/
-    fi
-    if [[ ! -f /etc/XrayR/route.json ]]; then
-        cp route.json /etc/XrayR/
-    fi
-    if [[ ! -f /etc/XrayR/custom_outbound.json ]]; then
-        cp custom_outbound.json /etc/XrayR/
-    fi
-    if [[ ! -f /etc/XrayR/custom_inbound.json ]]; then
-        cp custom_inbound.json /etc/XrayR/
-    fi
-    if [[ ! -f /etc/XrayR/rulelist ]]; then
-        cp rulelist /etc/XrayR/
-    fi
     management_script=$(mktemp "${TMPDIR:-/tmp}/xrayr-management.XXXXXX") || {
         rollback_transaction "$install_dir" "$backup_dir" "$had_previous" "$service_was_active"
         rm -rf -- "$transaction_dir"
@@ -335,7 +516,9 @@ install_XrayR() {
     echo "------------------------------------------"
 }
 
-echo -e "${green}开始安装${plain}"
-install_base
-# install_acme
-install_XrayR $1
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    echo -e "${green}开始安装${plain}"
+    install_base
+    # install_acme
+    install_XrayR "$@"
+fi
