@@ -61,17 +61,31 @@ sudo ss -ltnp | grep -E ':(80|443)([[:space:]]|$)'
 
 `MachineConfig` 与静态 `Nodes` 配置互斥。启用机器模式时，`/etc/XrayR/config.yml` 不会生成静态 `Nodes`。
 
-安装示例：
+交互安装（在终端中依次输入 `API Host`、`Machine ID`、`Machine Token`，Token 输入不回显）：
 
 ```
-curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o install-machine.sh https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install-machine.sh
-bash install-machine.sh \
+curl --fail --silent --show-error --location \
+  --proto '=https' --tlsv1.2 \
+  -o install-machine.sh \
+  https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install-machine.sh
+
+sudo bash install-machine.sh
+```
+
+已经通过参数提供的值不会被再次询问；缺少参数且没有可用终端时（CI、systemd、管道、自动部署）脚本不会等待输入，而是像以前一样由参数校验报错。
+
+无人值守安装（保持原有调用方式）：
+
+```
+sudo bash install-machine.sh \
   --api-host https://panel.example.com \
   --machine-id 1 \
   --token "machine-token" \
   --panel-type NewV2board \
   --enable-ws
 ```
+
+未显式指定时仍使用默认值 `panel-type=NewV2board`、`enable-ws=true`；`--timeout`、`--discovery-interval` 等高级参数继续通过命令行覆盖。交互安装只会询问 `API Host`、`Machine ID`、`Machine Token` 这三项。
 
 如果 `/etc/XrayR/config.yml` 已存在，脚本默认不会覆盖；确认要覆盖时添加 `--force`。
 

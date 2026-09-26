@@ -44,6 +44,9 @@ XrayRP Xboard machine-mode installer
 Usage:
   install-machine.sh --api-host URL --machine-id ID --token TOKEN [options]
 
+When run in an interactive terminal, any of the required options below that
+are not passed on the command line are prompted for instead.
+
 Required:
   --api-host URL              Xboard panel URL, for example https://panel.example.com
   --machine-id ID             MachineID copied from Xboard
@@ -65,6 +68,12 @@ Options:
   --force                     Overwrite existing /etc/XrayR/config.yml
   --dry-run                   Print intended actions without installing or writing files
   --help                      Show this help
+
+Interactive example:
+  install-machine.sh
+
+Non-interactive example:
+  install-machine.sh --api-host URL --machine-id ID --token TOKEN
 EOF
 }
 
@@ -190,6 +199,55 @@ parse_args() {
         esac
         shift
     done
+}
+
+# Interactive prompt helpers. /dev/tty keeps prompts working when the script
+# itself is piped, and makes sure the answers never enter the script's own
+# stdin/stdout pipes. When no controlling terminal is available the installer
+# stays non-interactive and validate_args reports the missing options.
+interactive_available() {
+    [[ -c /dev/tty ]] || return 1
+    { true < /dev/tty > /dev/tty; } 2>/dev/null
+}
+
+prompt_value() {
+    local label="$1"
+    local varname="$2"
+    local hidden="${3:-false}"
+    local value=""
+
+    while :; do
+        if [[ "$hidden" == "true" ]]; then
+            printf '%s: ' "$label" > /dev/tty
+            IFS= read -r -s value < /dev/tty || {
+                printf '\n' > /dev/tty
+                die "Unable to read ${label} from /dev/tty"
+            }
+            printf '\n' > /dev/tty
+        else
+            printf '%s: ' "$label" > /dev/tty
+            IFS= read -r value < /dev/tty || die "Unable to read ${label} from /dev/tty"
+        fi
+
+        [[ -n "$value" ]] && break
+        printf 'A value is required for %s.\n' "$label" > /dev/tty
+    done
+
+    printf -v "$varname" '%s' "$value"
+}
+
+prompt_missing_required() {
+    if [[ -n "$api_host" && -n "$machine_id" && -n "$token" ]]; then
+        return 0
+    fi
+    if ! interactive_available; then
+        return 0
+    fi
+
+    printf 'Machine mode installation requires the following values.\n' > /dev/tty
+    [[ -n "$api_host" ]] || prompt_value "API Host" api_host
+    [[ -n "$machine_id" ]] || prompt_value "Machine ID" machine_id
+    [[ -n "$token" ]] || prompt_value "Machine Token" token true
 }
 
 validate_number() {
@@ -756,6 +814,7 @@ print_dry_run() {
 
 main() {
     parse_args "$@"
+    prompt_missing_required
     validate_args
 
     if [[ "$dry_run" == "true" ]]; then
@@ -793,6 +852,8 @@ main() {
     print_next_steps
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+# BASH_SOURCE is unset when the script is fed through stdin (for example
+# "curl ... | bash"); fall back to $0 so that those runs still install.
+if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
     main "$@"
 fi
