@@ -17,7 +17,7 @@ jobs:
       - name: Shell syntax
         run: bash -n install.sh install-machine.sh XrayR.sh tests/*.sh
       - name: Python syntax
-        run: python3 -m py_compile tests/pty_run.py
+        run: python3 -c "import ast, pathlib; ast.parse(pathlib.Path('tests/pty_run.py').read_text(encoding='utf-8'))"
       - name: ShellCheck
         run: shellcheck --severity=error install.sh install-machine.sh XrayR.sh tests/*.sh
       - name: Repository tests

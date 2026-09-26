@@ -16,6 +16,10 @@ require_tools() {
             exit 0
         }
     done
+    if ! setsid -w true >/dev/null 2>&1; then
+        echo "SKIP: interactive prompt tests need setsid -w" >&2
+        exit 0
+    fi
 }
 
 run_pty() {
@@ -115,7 +119,7 @@ assert_equals "$detached_status" "1" "detached run did not fail with the validat
 assert_contains "$detached_output" -- "--machine-id is required" "detached run did not report the missing machine-id"
 assert_not_contains "$detached_output" "API Host:" "detached run prompted for api-host"
 
-if setsid -w bash -c "true < /dev/tty > /dev/tty" 2>"$detached_error"; then
+if LC_ALL=C setsid -w bash -c "true < /dev/tty > /dev/tty" 2>"$detached_error"; then
     fail "test environment still provides /dev/tty while detached"
 fi
 grep -qi "No such device or address" "$detached_error" || \
