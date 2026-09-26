@@ -42,6 +42,7 @@ cat > "${work_dir}/complete.plan" <<EOF
 expect-not API Host:
 expect-not Machine ID:
 expect-not Machine Token:
+expect Dry run: no files will be written
 run bash "${installer}" --api-host https://panel.example.com --machine-id 1 --token pty-complete-token --dry-run
 EOF
 if ! complete_output=$(run_pty "${work_dir}/complete.plan" 2>&1); then
@@ -162,5 +163,86 @@ assert_not_contains "$piped_output" "pty-piped-secret-token" "piped install leak
 assert_contains "$piped_output" "MachineID=9" "piped install did not apply the prompted machine-id"
 assert_contains "$piped_output" "ApiHost=https://panel.example.com" "piped install did not apply the api-host argument"
 echo "PASS: piped script still prompts through /dev/tty"
+
+# 8. A controlling terminal is not enough: when the installer runs in a
+#    process group that is not the terminal's foreground group, reading
+#    /dev/tty raises SIGTTIN and stops the process instead of letting
+#    validate_args report the missing option. The wrapper always terminates,
+#    so a regression shows up as a timeout/kill status instead of a hang.
+cat > "${work_dir}/process-group-probe.sh" <<'EOF'
+#!/bin/bash
+set -u
+
+mode="$1"
+installer="$2"
+out_file="$3"
+
+case "$mode" in
+    timeout-wrapper)
+        # timeout(1) puts the command into its own process group.
+        timeout 8 bash "$installer" --api-host https://panel.example.com > "$out_file" 2>&1
+        printf 'EXITED=yes\nSTATUS=%s\n' "$?"
+        ;;
+    background-pgroup)
+        set -m
+        bash "$installer" --api-host https://panel.example.com > "$out_file" 2>&1 &
+        child=$!
+        exited="no"
+        for ((attempt = 0; attempt < 80; attempt++)); do
+            if ! kill -0 "$child" 2>/dev/null; then
+                exited="yes"
+                break
+            fi
+            sleep 0.1
+        done
+        if [[ "$exited" == "yes" ]]; then
+            wait "$child"
+            printf 'EXITED=yes\nSTATUS=%s\n' "$?"
+        else
+            printf 'STATE=%s\n' "$(ps -o stat= -p "$child" 2>/dev/null | tr -d ' ')"
+            kill -9 "$child" 2>/dev/null
+            wait "$child" 2>/dev/null
+            printf 'EXITED=no\nSTATUS=124\n'
+        fi
+        ;;
+    *)
+        printf 'EXITED=no\nSTATUS=2\n'
+        ;;
+esac
+EOF
+
+run_process_group_case() {
+    local mode="$1"
+    local plan="${work_dir}/${mode}.plan"
+    local output_file="${work_dir}/${mode}.out"
+
+    cat > "$plan" <<EOF
+expect-not API Host:
+expect-not Machine ID:
+expect-not Machine Token:
+expect EXITED=yes
+run bash "${work_dir}/process-group-probe.sh" ${mode} "${installer}" "${output_file}"
+EOF
+    run_pty "$plan" 2>&1
+}
+
+timeout_case_output=$(run_process_group_case timeout-wrapper) ||
+    fail "timeout-wrapped install blocked or was killed instead of reaching validate_args: ${timeout_case_output}"
+assert_contains "$timeout_case_output" "EXITED=yes" "timeout-wrapped install did not exit on its own"
+assert_contains "$timeout_case_output" "STATUS=1" "timeout-wrapped install did not exit with the validation status"
+assert_not_contains "$timeout_case_output" "Machine ID:" "timeout-wrapped install prompted for machine-id"
+timeout_case_log=$(cat "${work_dir}/timeout-wrapper.out")
+assert_contains "$timeout_case_log" -- "--machine-id is required" "timeout-wrapped install did not report the missing machine-id"
+echo "PASS: timeout-wrapped install stays non-interactive"
+
+background_case_output=$(run_process_group_case background-pgroup) ||
+    fail "background process group install blocked or was killed instead of reaching validate_args: ${background_case_output}"
+assert_contains "$background_case_output" "EXITED=yes" "background process group install did not exit on its own"
+assert_contains "$background_case_output" "STATUS=1" "background process group install did not exit with the validation status"
+assert_not_contains "$background_case_output" "STATE=T" "background process group install entered the stopped state"
+assert_not_contains "$background_case_output" "Machine ID:" "background process group install prompted for machine-id"
+background_case_log=$(cat "${work_dir}/background-pgroup.out")
+assert_contains "$background_case_log" -- "--machine-id is required" "background process group install did not report the missing machine-id"
+echo "PASS: background process group install stays non-interactive"
 
 echo "PASS: interactive machine installer prompts"

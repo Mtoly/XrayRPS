@@ -203,11 +203,30 @@ parse_args() {
 
 # Interactive prompt helpers. /dev/tty keeps prompts working when the script
 # itself is piped, and makes sure the answers never enter the script's own
-# stdin/stdout pipes. When no controlling terminal is available the installer
+# stdin/stdout pipes. When no foreground terminal is available the installer
 # stays non-interactive and validate_args reports the missing options.
 interactive_available() {
+    local stat_line rest pgid tpgid
+    local -a stat_fields
+    local IFS=$' \t\n'
+
     [[ -c /dev/tty ]] || return 1
-    { true < /dev/tty > /dev/tty; } 2>/dev/null
+    { true < /dev/tty > /dev/tty; } 2>/dev/null || return 1
+
+    # Reading /dev/tty, which prompt_value does later, sends SIGTTIN and stops
+    # the process when its process group is not the terminal's foreground
+    # group, and a stopped process never reaches the redirection error. Treat
+    # only a foreground process group as interactive. After the leading
+    # "pid (comm) " the /proc/self/stat fields are state ppid pgrp session
+    # tty_nr tpgid, so the array indexes below are pgrp and tpgid.
+    [[ -r /proc/self/stat ]] || return 1
+    IFS= read -r stat_line < /proc/self/stat || return 1
+    rest=${stat_line##*) }
+    read -r -a stat_fields <<< "$rest" || return 1
+    pgid=${stat_fields[2]:-}
+    tpgid=${stat_fields[5]:-}
+    [[ -n "$pgid" && -n "$tpgid" ]] || return 1
+    [[ "$tpgid" == "$pgid" ]]
 }
 
 prompt_value() {
