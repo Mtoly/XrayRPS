@@ -5,6 +5,10 @@ set -euo pipefail
 # shellcheck source=test_helper.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test_helper.sh"
 
+# Keep ShellCheck aware of the exported repository root when this file is linted
+# on its own; the helper already sets it when the suite runs normally.
+repo_root=${repo_root:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
+
 installer="${repo_root}/install-machine.sh"
 pty_runner="${repo_root}/tests/pty_run.py"
 
