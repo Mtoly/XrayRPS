@@ -10,6 +10,7 @@
 
 ### Fixed
 
+- Use the published `ghcr.io/mtoly/xrayrp` image in the Compose file, README commands, and Docker Compose test; the previous references used a package name missing the final `p`.
 - Restore `XrayR.service` to `User=root` and `Group=root` after the dedicated `xrayr` account rollout caused `status=217/USER` on incomplete upgrades and low-port bind failures for machine nodes using TCP 80/443.
 - Remove dedicated service-account provisioning and all installer dependencies on the `xrayr` user and group. Existing accounts are intentionally left untouched.
 - Restore `/usr/local/XrayR`, `/etc/XrayR`, and `/var/lib/xrayr` ownership to `root:root` without deleting or replacing existing configuration, certificates, or state data.

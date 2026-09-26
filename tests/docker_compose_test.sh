@@ -3,7 +3,8 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 fail(){ echo "FAIL: $*" >&2; exit 1; }
 compose="$repo_root/docker-compose.yml"
-grep -qF 'image: ghcr.io/mtoly/xrayr:0.9.1-alpha-6' "$compose" || fail 'image is not pinned to a reviewed release tag'
+if grep -qF 'ghcr.io/mtoly/xrayr:' "$compose"; then fail 'compose references the retired xrayr package name'; fi
+grep -qF 'image: ghcr.io/mtoly/xrayrp:0.9.1-alpha-6' "$compose" || fail 'image is not pinned to a reviewed release tag'
 if grep -qE 'image: .*:latest$' "$compose"; then fail 'compose still tracks latest'; fi
 grep -qF 'read_only: true' "$compose" || fail 'read-only filesystem missing'
 grep -qF 'no-new-privileges:true' "$compose" || fail 'no-new-privileges missing'
