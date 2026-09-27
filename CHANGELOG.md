@@ -7,6 +7,7 @@
 - Prompt interactively for `--api-host`, `--machine-id`, and `--token` in `install-machine.sh` when a controlling terminal is available and those options are not supplied. The token is read without echo and is never printed or logged.
 - Keep non-interactive runs unchanged: without a controlling terminal the prompt step is skipped, `validate_args` still reports the first missing option, and all existing CLI invocations behave as before.
 - Allow `install-machine.sh` to run when it is fed to bash through stdin (`bash -s -- <options>`); previously `set -u` aborted on the unset `BASH_SOURCE` lookup.
+- Docker Compose now follows the latest XrayRP release by default while allowing `XRAYRP_TAG` to pin a specific version.
 
 ### Fixed
 

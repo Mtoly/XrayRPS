@@ -104,10 +104,47 @@ XrayR uninstall
 ```
 # Docker 安装
 
+Docker 部署有两种模式，二者共用同一个镜像仓库 `ghcr.io/mtoly/xrayrp`：
+
+- 默认模式：跟随最新发布的 Docker release（`latest` 标签）。
+- 固定版本模式：通过 `XRAYRP_TAG` 锁定某个具体 release。
+
+无论使用哪种模式，Docker 都不会在后台自动升级。发布新的 `latest` 之后，必须重新执行一次 `docker pull` / `docker compose pull` / `docker compose up -d`，才会重建到新镜像。
+
+### 默认：自动跟随最新 Docker release
+
+默认标签就是 `latest`，等价于 `XRAYRP_TAG=latest`，不需要创建 `.env`。
+
 ```
-docker pull ghcr.io/mtoly/xrayrp:0.9.1-alpha-6
-docker run --detach --restart=unless-stopped --name xrayr --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev --security-opt no-new-privileges:true --cap-drop=ALL --volume "${PATH_TO_CONFIG}/config.yml:/etc/XrayR/config.yml:ro" --network=host ghcr.io/mtoly/xrayrp:0.9.1-alpha-6
+docker pull ghcr.io/mtoly/xrayrp:latest
+docker run --detach --restart=unless-stopped --name xrayr --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev --security-opt no-new-privileges:true --cap-drop=ALL --volume "${PATH_TO_CONFIG}/config.yml:/etc/XrayR/config.yml:ro" --network=host ghcr.io/mtoly/xrayrp:latest
 ```
+
+### 手动锁定版本
+
+临时指定（仅本条命令生效）：
+
+```
+XRAYRP_TAG=0.9.1-alpha-6 docker compose pull
+XRAYRP_TAG=0.9.1-alpha-6 docker compose up -d
+```
+
+或者在 `docker-compose.yml` 同目录创建 `.env`：
+
+```
+XRAYRP_TAG=0.9.1-alpha-6
+```
+
+然后照常执行：
+
+```
+docker compose pull
+docker compose up -d
+```
+
+固定版本适合：生产环境、需要变更审核、需要稳定回滚点、暂时不希望跟随最新 release。
+
+恢复跟随最新版：删除 `.env` 中的 `XRAYRP_TAG`，或改成 `XRAYRP_TAG=latest`，然后重新执行 `docker compose pull` 与 `docker compose up -d`。
 
 # Docker compose 安装
 0. 安装docker-compose: 
@@ -121,7 +158,9 @@ rm -f get-docker.sh
 2. `cd XrayRPS`
 3. 编辑config。
 配置文件基本格式如下，Nodes下可以同时添加多个面板，多个节点配置信息，只需添加相同格式的Nodes item即可。
-4. 启动docker：`docker compose up -d`
+4. 启动docker：`docker compose pull && docker compose up -d`
+默认使用 `ghcr.io/mtoly/xrayrp:latest`（即 `XRAYRP_TAG=latest`），无需创建 `.env`；需要固定版本时按上文「手动锁定版本」设置 `XRAYRP_TAG`。
+Compose 中已声明 `pull_policy: always`，每次 `docker compose up -d` 都会先向 registry 校验镜像，不会因为本地存在旧的 `latest` 就继续使用旧镜像；但已运行的容器不会自行重建，仍需重新执行上述命令。
 ```
 Log:
   Level: none # Log level: none, error, warning, info, debug 
@@ -209,6 +248,8 @@ docker compose pull
 docker compose up -d --remove-orphans
 docker compose ps
 ```
+
+使用默认 `latest` 时，上面的命令会把容器重建到最新发布的 release；固定版本的部署只有在修改 `XRAYRP_TAG`（或删除后回落到 `latest`）之后，重新执行这几步才会切换版本。
 
 ## 安全基线与恢复
 
