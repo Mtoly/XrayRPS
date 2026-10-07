@@ -119,6 +119,16 @@ validate_release_version() {
     [[ "$candidate" =~ ^v?[0-9A-Za-z][0-9A-Za-z._-]*$ ]]
 }
 
+normalize_release_version() {
+    local candidate="$1"
+    if [[ "$candidate" == v* ]]; then
+        [[ "$candidate" =~ ^v[0-9] ]] || return 1
+        candidate="${candidate#v}"
+    fi
+    [[ "$candidate" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || return 1
+    printf '%s\n' "$candidate"
+}
+
 verify_release_checksum() {
     local release_dir="$1"
     local artifact_name="$2"
@@ -245,11 +255,9 @@ install_XrayR() {
         fi
         echo -e "检测到 XrayR 最新版本：${last_version}，开始安装"
     else
-        last_version="$1"
-        [[ "$last_version" == v* ]] || last_version="v${last_version}"
-        if ! validate_release_version "$last_version"; then
+        if ! last_version=$(normalize_release_version "$1"); then
             rm -rf -- "$transaction_dir"
-            echo -e "${red}XrayR 版本格式无效: ${last_version}${plain}"
+            echo -e "${red}XrayR 版本格式无效: $1${plain}"
             exit 1
         fi
         echo -e "开始安装 XrayR ${last_version}"
