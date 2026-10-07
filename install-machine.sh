@@ -313,9 +313,21 @@ validate_args() {
     resync_on_reconnect=$(parse_bool "--resync-on-reconnect" "$resync_on_reconnect")
 
     if [[ "$version" != "latest" ]]; then
-        [[ "$version" == v* ]] || version="v${version}"
-        [[ "$version" =~ ^v?[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || die "Invalid release version: ${version}"
+        local requested_version="$version"
+        if ! version=$(normalize_release_version "$requested_version"); then
+            die "Invalid release version: ${requested_version}"
+        fi
     fi
+}
+
+normalize_release_version() {
+    local candidate="$1"
+    if [[ "$candidate" == v* ]]; then
+        [[ "$candidate" =~ ^v[0-9] ]] || return 1
+        candidate="${candidate#v}"
+    fi
+    [[ "$candidate" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || return 1
+    printf '%s\n' "$candidate"
 }
 
 require_root() {
