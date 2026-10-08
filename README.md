@@ -11,11 +11,55 @@ Find the source code here: [Mtoly/XrayRP](https://github.com/Mtoly/XrayRP)
 
 # 一键安装
 
+安装器及 `XrayR` 管理命令支持正在运行的 **systemd 或 OpenRC**，根据运行状态和可用命令识别，不按发行版名称猜测。其他 init 环境会在安装前报告缺少的运行条件。
+
+Alpine/OpenRC 主机先准备 Bash 和下载工具：
+
+```sh
+apk add --no-cache bash curl
+```
+
 ```
 curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o install.sh https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install.sh
 bash install.sh
 rm -f install.sh
 ```
+
+指定版本执行 `bash install.sh 0.9.5`；已有节点使用 `XrayR update 0.9.5`。升级保留 `/etc/XrayR/config.yml`（包括 MachineConfig 凭据），发布包和 SHA256SUMS 仍需通过校验。
+
+## Alpine / OpenRC 服务管理
+
+OpenRC 安装 `/etc/init.d/XrayR`，使用系统自带 `supervise-daemon`，以 `root:root` 从 `/usr/local/XrayR` 执行 `/usr/local/XrayR/XrayR --config /etc/XrayR/config.yml`。异常退出后等待 10 秒重启；启用后加入 `default` runlevel。系统必须已经运行 OpenRC，并提供 `rc-service`、`rc-update`、`supervise-daemon`。
+
+```bash
+XrayR start
+XrayR stop
+XrayR restart
+XrayR status
+XrayR enable
+XrayR disable
+XrayR log
+# 原生命令：
+rc-service XrayR status
+rc-update add XrayR default
+rc-update del XrayR default
+```
+
+普通全新安装后先配置 `/etc/XrayR/config.yml` 再启动；已有配置的更新会尝试重启服务。Machine 安装器同样支持 OpenRC：
+
+```bash
+sudo bash install-machine.sh \
+  --api-host https://panel.example.com \
+  --machine-id MACHINE_ID \
+  --token TOKEN \
+  --version 0.9.5
+```
+
+Alpine root 终端可省略 `sudo`。Machine 配置已存在时，仍要求 `--force` 才覆盖；普通 `XrayR update` 保留原 MachineConfig。失败回滚恢复原二进制、服务定义、配置及先前运行/自启状态；恢复出错会报告保留的临时恢复目录，请勿将其中的凭据文件公开。
+
+PID 文件为 `/run/XrayR.pid`，stdout/stderr 写入 `/var/log/XrayR/output.log`、`error.log`（目录 0750、文件 0640）。`XrayR log` 可追踪日志；日志轮转由主机运维配置。OpenRC 不提供 systemd unit 的命名空间沙箱隔离，systemd unit 及其限制保持原样。
+
+隔离回归不连接真实 Xboard：执行 `docker build -f tests/alpine.Dockerfile -t xrayrps-openrc-test .`、`docker run --rm xrayrps-openrc-test` 可复现。测试使用本地进程 fixture，验证原生 OpenRC 进程管理和安装/回滚路径；不代表真实 VPS 的 PID 1 启动、网络依赖、重启或 XrayRP 节点端到端验收。
 
 ## systemd root 兼容模式与升级
 

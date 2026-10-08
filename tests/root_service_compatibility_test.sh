@@ -262,8 +262,8 @@ assert_machine_mode_flow() (
 assert_machine_mode_flow
 
 grep -qF 'run_remote_installer https://raw.githubusercontent.com/Mtoly/XrayRPS/main/install.sh' "$repo_root/XrayR.sh" || fail 'management install/update no longer uses the standard installer'
-grep -qF 'systemctl daemon-reload' "$repo_root/install.sh" || fail 'standard installer is missing daemon-reload'
-grep -qF 'systemctl daemon-reload' "$repo_root/install-machine.sh" || fail 'machine installer is missing daemon-reload'
+grep -qF 'service_control daemon-reload' "$repo_root/install.sh" || fail 'standard installer is missing daemon-reload'
+grep -qF 'service_control daemon-reload' "$repo_root/install-machine.sh" || fail 'machine installer is missing daemon-reload'
 grep -qF '`XrayR.service` 明确使用 `root:root` 运行' "$repo_root/README.md" || fail 'README does not document root compatibility mode'
 grep -qF 'Run the systemd unit as `root:root`' "$repo_root/SECURITY.md" || fail 'SECURITY.md still documents the dedicated account'
 grep -qF 'Restore `XrayR.service` to `User=root` and `Group=root`' "$repo_root/CHANGELOG.md" || fail 'CHANGELOG does not record the compatibility rollback'

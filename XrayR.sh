@@ -9,12 +9,84 @@ version="v1.0.0"
 config_file="${XRAYR_CONFIG_FILE:-/etc/XrayR/config.yml}"
 service_file="${XRAYR_SERVICE_FILE:-/etc/systemd/system/XrayR.service}"
 
+# Keep this block identical in all three standalone entrypoints.
+service_manager=systemd
+detect_service_manager() {
+    local runtime_root=""
+    if [[ "${XRAYR_TEST_MODE:-0}" == 1 ]]; then
+        runtime_root="${XRAYR_INIT_ROOT:-}"
+    fi
+    if [[ -d "${runtime_root}/run/systemd/system" ]] &&
+        command -v systemctl >/dev/null 2>&1 &&
+        systemctl show --property=Version --value >/dev/null 2>&1; then
+        service_manager=systemd
+    elif [[ -s "${runtime_root}/run/openrc/softlevel" ]] &&
+        command -v rc-service >/dev/null 2>&1 &&
+        command -v rc-update >/dev/null 2>&1 &&
+        command -v supervise-daemon >/dev/null 2>&1; then
+        service_manager=openrc
+    else
+        echo "Unsupported init environment: requires running systemd or OpenRC (rc-service, rc-update, supervise-daemon)." >&2
+        return 1
+    fi
+    if [[ "$service_manager" == openrc ]]; then
+        service_file="${XRAYR_SERVICE_FILE:-/etc/init.d/XrayR}"
+    else
+        service_file="${XRAYR_SERVICE_FILE:-/etc/systemd/system/XrayR.service}"
+    fi
+}
+
+service_control() {
+    local action="$1"
+    shift
+    if [[ "$service_manager" == systemd ]]; then
+        case "$action" in
+            daemon-reload|reset-failed) systemctl "$action" "$@" ;;
+            *) systemctl "$action" XrayR "$@" ;;
+        esac
+        return $?
+    fi
+    case "$action" in
+        start|stop|restart|status) rc-service XrayR "$action" ;;
+        is-active) rc-service XrayR status >/dev/null 2>&1 ;;
+        enable) rc-update add XrayR default ;;
+        disable)
+            local enabled_services
+            enabled_services=$(rc-update show default) || return 1
+            if grep -Eq '^[[:space:]]*XrayR[[:space:]]*\|' <<< "$enabled_services"; then
+                rc-update del XrayR default
+            else
+                return 0
+            fi
+            ;;
+        is-enabled) rc-update show default | grep -E '^[[:space:]]*XrayR[[:space:]]*\|' >/dev/null ;;
+        daemon-reload|reset-failed) return 0 ;;
+        *) echo "Unsupported OpenRC operation: $action" >&2; return 1 ;;
+    esac
+}
+
+service_logs() {
+    if [[ "$service_manager" == systemd ]]; then
+        journalctl -u XrayR.service -e --no-pager -f
+    else
+        local log_dir="${XRAYR_LOG_DIR:-/var/log/XrayR}"
+        if [[ ! -f "$log_dir/output.log" || ! -f "$log_dir/error.log" ]]; then
+            echo "OpenRC logs are created on first start: $log_dir" >&2
+            return 1
+        fi
+        tail -n 100 -f "$log_dir/output.log" "$log_dir/error.log"
+    fi
+}
+# End standalone service-manager block.
+
 if [[ "${XRAYR_TEST_MODE:-0}" != "1" ]]; then
 # check root
 [[ $EUID -ne 0 ]] && echo -e "${red}错误: ${plain} 必须使用root用户运行此脚本！\n" && exit 1
 
 # check os
-if [[ -f /etc/redhat-release ]]; then
+if [[ -f /etc/alpine-release ]]; then
+    release="alpine"
+elif [[ -f /etc/redhat-release ]]; then
     release="centos"
 elif cat /etc/issue | grep -Eqi "debian"; then
     release="debian"
@@ -170,11 +242,11 @@ uninstall() {
         fi
         return 0
     fi
-    systemctl stop XrayR
-    systemctl disable XrayR
-    rm /etc/systemd/system/XrayR.service -f
-    systemctl daemon-reload
-    systemctl reset-failed
+    service_control stop || return 1
+    service_control disable || return 1
+    rm -f -- "$service_file"
+    service_control daemon-reload
+    service_control reset-failed
     rm /etc/XrayR/ -rf
     rm /usr/local/XrayR/ -rf
 
@@ -193,7 +265,7 @@ start() {
         echo ""
         echo -e "${green}XrayR已运行，无需再次启动，如需重启请选择重启${plain}"
     else
-        systemctl start XrayR
+        service_control start
         sleep 2
         check_status
         if [[ $? == 0 ]]; then
@@ -209,7 +281,7 @@ start() {
 }
 
 stop() {
-    systemctl stop XrayR
+    service_control stop
     sleep 2
     check_status
     if [[ $? == 1 ]]; then
@@ -224,7 +296,7 @@ stop() {
 }
 
 restart() {
-    systemctl restart XrayR
+    service_control restart
     sleep 2
     check_status
     if [[ $? == 0 ]]; then
@@ -700,7 +772,7 @@ EOF
 }
 
 status() {
-    systemctl status XrayR --no-pager -l || true
+    service_control status --no-pager -l || true
     check_status
     case $? in
         0)
@@ -720,7 +792,7 @@ status() {
 }
 
 enable() {
-    systemctl enable XrayR
+    service_control enable
     if [[ $? == 0 ]]; then
         echo -e "${green}XrayR 设置开机自启成功${plain}"
     else
@@ -733,8 +805,9 @@ enable() {
 }
 
 disable() {
-    systemctl disable XrayR
-    if [[ $? == 0 ]]; then
+    local result=0
+    service_control disable || result=$?
+    if [[ "$result" == 0 ]]; then
         echo -e "${green}XrayR 取消开机自启成功${plain}"
     else
         echo -e "${red}XrayR 取消开机自启失败${plain}"
@@ -743,10 +816,11 @@ disable() {
     if [[ $# == 0 ]]; then
         before_show_menu
     fi
+    return "$result"
 }
 
 show_log() {
-    journalctl -u XrayR.service -e --no-pager -f
+    service_logs
     if [[ $# == 0 ]]; then
         before_show_menu
     fi
@@ -792,7 +866,7 @@ check_status() {
     if [[ ! -f "$service_file" ]]; then
         return 2
     fi
-    if systemctl is-active --quiet XrayR >/dev/null 2>&1; then
+    if service_control is-active --quiet >/dev/null 2>&1; then
         return 0
     else
         return 1
@@ -800,8 +874,7 @@ check_status() {
 }
 
 check_enabled() {
-    temp=$(systemctl is-enabled XrayR)
-    if [[ x"${temp}" == x"enabled" ]]; then
+    if service_control is-enabled >/dev/null 2>&1; then
         return 0
     else
         return 1;
@@ -950,6 +1023,10 @@ show_menu() {
     esac
 }
 
+
+if [[ "${XRAYR_TEST_MODE:-0}" != 1 || -n "${XRAYR_INIT_ROOT:-}" ]]; then
+    detect_service_manager || exit 1
+fi
 
 if [[ $# -gt 0 ]]; then
     case $1 in

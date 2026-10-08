@@ -15,7 +15,126 @@ install_dir="${XRAYR_INSTALL_DIR:-/usr/local/XrayR}"
 config_dir="${XRAYR_CONFIG_DIR:-/etc/XrayR}"
 config_file="${config_dir}/config.yml"
 service_file="${XRAYR_SERVICE_FILE:-/etc/systemd/system/XrayR.service}"
+
+# Keep this block identical in all three standalone entrypoints.
+service_manager=systemd
+detect_service_manager() {
+    local runtime_root=""
+    if [[ "${XRAYR_TEST_MODE:-0}" == 1 ]]; then
+        runtime_root="${XRAYR_INIT_ROOT:-}"
+    fi
+    if [[ -d "${runtime_root}/run/systemd/system" ]] &&
+        command -v systemctl >/dev/null 2>&1 &&
+        systemctl show --property=Version --value >/dev/null 2>&1; then
+        service_manager=systemd
+    elif [[ -s "${runtime_root}/run/openrc/softlevel" ]] &&
+        command -v rc-service >/dev/null 2>&1 &&
+        command -v rc-update >/dev/null 2>&1 &&
+        command -v supervise-daemon >/dev/null 2>&1; then
+        service_manager=openrc
+    else
+        echo "Unsupported init environment: requires running systemd or OpenRC (rc-service, rc-update, supervise-daemon)." >&2
+        return 1
+    fi
+    if [[ "$service_manager" == openrc ]]; then
+        service_file="${XRAYR_SERVICE_FILE:-/etc/init.d/XrayR}"
+    else
+        service_file="${XRAYR_SERVICE_FILE:-/etc/systemd/system/XrayR.service}"
+    fi
+}
+
+service_control() {
+    local action="$1"
+    shift
+    if [[ "$service_manager" == systemd ]]; then
+        case "$action" in
+            daemon-reload|reset-failed) systemctl "$action" "$@" ;;
+            *) systemctl "$action" XrayR "$@" ;;
+        esac
+        return $?
+    fi
+    case "$action" in
+        start|stop|restart|status) rc-service XrayR "$action" ;;
+        is-active) rc-service XrayR status >/dev/null 2>&1 ;;
+        enable) rc-update add XrayR default ;;
+        disable)
+            local enabled_services
+            enabled_services=$(rc-update show default) || return 1
+            if grep -Eq '^[[:space:]]*XrayR[[:space:]]*\|' <<< "$enabled_services"; then
+                rc-update del XrayR default
+            else
+                return 0
+            fi
+            ;;
+        is-enabled) rc-update show default | grep -E '^[[:space:]]*XrayR[[:space:]]*\|' >/dev/null ;;
+        daemon-reload|reset-failed) return 0 ;;
+        *) echo "Unsupported OpenRC operation: $action" >&2; return 1 ;;
+    esac
+}
+
+service_logs() {
+    if [[ "$service_manager" == systemd ]]; then
+        journalctl -u XrayR.service -e --no-pager -f
+    else
+        local log_dir="${XRAYR_LOG_DIR:-/var/log/XrayR}"
+        if [[ ! -f "$log_dir/output.log" || ! -f "$log_dir/error.log" ]]; then
+            echo "OpenRC logs are created on first start: $log_dir" >&2
+            return 1
+        fi
+        tail -n 100 -f "$log_dir/output.log" "$log_dir/error.log"
+    fi
+}
+# End standalone service-manager block.
+
+snapshot_service_state() {
+    local snapshot="$1"
+    mkdir -p "$snapshot" || return 1
+    if [[ -f "$service_file" ]]; then
+        cp -p -- "$service_file" "$snapshot/service" || return 1
+        if service_control is-active --quiet >/dev/null 2>&1; then
+            touch "$snapshot/active" || return 1
+        fi
+        if service_control is-enabled >/dev/null 2>&1; then
+            touch "$snapshot/enabled" || return 1
+        fi
+    fi
+    if [[ -d "$config_dir" ]]; then
+        cp -a -- "$config_dir" "$snapshot/config" || return 1
+    fi
+    return 0
+}
+
+restore_service_state() {
+    local snapshot="$1"
+    if service_control is-enabled >/dev/null 2>&1; then
+        service_control disable || return 1
+    fi
+    if [[ -f "$snapshot/service" ]]; then
+        cp -p -- "$snapshot/service" "$service_file" || return 1
+    else
+        rm -f -- "$service_file" || return 1
+    fi
+    if [[ -d "$snapshot/config" ]]; then
+        rm -rf -- "$config_dir" || return 1
+        cp -a -- "$snapshot/config" "$config_dir" || return 1
+    else
+        rm -rf -- "$config_dir" || return 1
+    fi
+    service_control daemon-reload || return 1
+    if [[ -f "$snapshot/enabled" ]]; then
+        service_control enable || return 1
+    elif [[ -f "$snapshot/service" ]]; then
+        service_control disable || return 1
+    else
+        service_control disable >/dev/null 2>&1 || true
+    fi
+    if [[ -f "$snapshot/active" ]]; then
+        service_control start || return 1
+        service_control is-active --quiet || return 1
+    fi
+}
 management_script="/usr/bin/XrayR"
+management_link="/usr/bin/xrayr"
 script_repo="Mtoly/XrayRPS"
 release_repo="Mtoly/XrayRP"
 raw_branch="main"
@@ -396,9 +515,9 @@ detect_arch() {
     fi
 }
 
-require_systemd() {
-    [[ "$(uname -s)" == "Linux" ]] || die "This installer supports Linux systemd only"
-    command -v systemctl >/dev/null 2>&1 || die "systemctl was not found; this installer supports systemd only"
+require_service_manager() {
+    [[ "$(uname -s)" == "Linux" ]] || die "This installer supports Linux only"
+    detect_service_manager || exit 1
 }
 
 install_base() {
@@ -572,10 +691,15 @@ ensure_service_permissions() {
 }
 
 install_service() {
-    local service_source="${cur_dir}/XrayR.service"
+    local service_asset=XrayR.service service_mode=0644
+    if [[ "$service_manager" == openrc ]]; then
+        service_asset=XrayR.openrc
+        service_mode=0755
+    fi
+    local service_source="${cur_dir}/${service_asset}"
 
     if [[ -f "$service_source" ]]; then
-        install -m 0644 "$service_source" "$service_file"
+        install -m "$service_mode" "$service_source" "$service_file"
         return
     fi
 
@@ -583,25 +707,49 @@ install_service() {
     service_tmp=$(mktemp "${TMPDIR:-/tmp}/xrayr-service.XXXXXX")
     if ! curl --fail --silent --show-error --location \
         --proto '=https' --tlsv1.2 \
-        -o "$service_tmp" "https://raw.githubusercontent.com/${script_repo}/${raw_branch}/XrayR.service"; then
+        -o "$service_tmp" "https://raw.githubusercontent.com/${script_repo}/${raw_branch}/${service_asset}"; then
         rm -f -- "$service_tmp"
-        die "Failed to download XrayR systemd service file"
+        die "Failed to download XrayR ${service_manager} service file"
     fi
-    install -m 0644 "$service_tmp" "$service_file"
+    install -m "$service_mode" "$service_tmp" "$service_file"
     rm -f -- "$service_tmp"
 }
 
 install_management_script() {
+    local snapshot="$transaction_dir/management-state"
+    local candidate="$snapshot/new-script"
+    mkdir -p "$snapshot"
+    # Preserve absent paths and symlinks as well as regular-file permissions.
+    if [[ -e "$management_script" || -L "$management_script" ]]; then
+        cp -a -- "$management_script" "$snapshot/script"
+    fi
+    if [[ -e "$management_link" || -L "$management_link" ]]; then
+        cp -a -- "$management_link" "$snapshot/link"
+    fi
+    touch "$snapshot/ready"
     if [[ -f "${cur_dir}/XrayR.sh" ]]; then
-        cp -f "${cur_dir}/XrayR.sh" "$management_script"
+        cp -- "${cur_dir}/XrayR.sh" "$candidate"
     else
         curl --fail --silent --show-error --location \
             --proto '=https' --tlsv1.2 \
-            -o "$management_script" "https://raw.githubusercontent.com/${script_repo}/${raw_branch}/XrayR.sh"
+            -o "$candidate" "https://raw.githubusercontent.com/${script_repo}/${raw_branch}/XrayR.sh"
     fi
-    chmod +x "$management_script"
-    ln -sf "$management_script" /usr/bin/xrayr
-    chmod +x /usr/bin/xrayr
+    chmod 0755 "$candidate"
+    mv -fT -- "$candidate" "$management_script"
+    ln -sf "$management_script" "$management_link"
+}
+
+restore_management_script() {
+    local snapshot="$transaction_dir/management-state"
+    [[ -f "$snapshot/ready" ]] || return 0
+    rm -f -- "$management_script" "$management_link" || return 1
+    if [[ -e "$snapshot/script" || -L "$snapshot/script" ]]; then
+        cp -a -- "$snapshot/script" "$management_script" || return 1
+    fi
+    if [[ -e "$snapshot/link" || -L "$snapshot/link" ]]; then
+        cp -a -- "$snapshot/link" "$management_link" || return 1
+    fi
+    return 0
 }
 
 copy_default_config_file() {
@@ -615,11 +763,26 @@ copy_default_config_file() {
 
 rollback_installation() {
     [[ "$transaction_active" == "true" ]] || return 0
-    systemctl stop XrayR >/dev/null 2>&1 || true
-    rm -rf -- "$install_dir"
-    if [[ "$transaction_had_previous" == "true" && -d "$transaction_backup" ]]; then
-        mv -- "$transaction_backup" "$install_dir"
-        systemctl start XrayR >/dev/null 2>&1 || true
+    if [[ -f "$service_file" ]] && ! service_control stop; then
+        echo "Rollback failed to stop XrayR; recovery files remain at $transaction_dir." >&2
+        transaction_active=false
+        return 1
+    fi
+    if [[ "$transaction_had_previous" == true && ! -d "$transaction_backup" ]]; then
+        echo "Rollback failed: original binary backup missing at $transaction_backup." >&2
+        transaction_active=false
+        return 1
+    fi
+    if ! rm -rf -- "$install_dir" ||
+        { [[ "$transaction_had_previous" == true ]] && ! mv -- "$transaction_backup" "$install_dir"; }; then
+        echo "Rollback failed to restore binary; recovery files remain at $transaction_backup." >&2
+        transaction_active=false
+        return 1
+    fi
+    if ! restore_management_script || ! restore_service_state "$transaction_dir/service-state"; then
+        echo "Rollback incomplete; recovery files remain at $transaction_dir." >&2
+        transaction_active=false
+        return 1
     fi
     rm -rf -- "$transaction_dir"
     transaction_active="false"
@@ -647,6 +810,10 @@ download_and_install_release() {
     staged_install="${transaction_dir}/new"
     transaction_backup="${transaction_dir}/previous"
     mkdir -p "$staged_install"
+    if ! snapshot_service_state "$transaction_dir/service-state"; then
+        rm -rf -- "$transaction_dir"
+        die "Failed to snapshot the previous installation"
+    fi
 
     if ! download_https "$download_url" "$archive_file"; then
         rm -rf -- "$transaction_dir"
@@ -670,12 +837,25 @@ download_and_install_release() {
     }
 
     transaction_had_previous="false"
+    if [[ -f "$transaction_dir/service-state/active" ]] && ! service_control stop; then
+        rm -rf -- "$transaction_dir"
+        die "Failed to stop XrayR before upgrade; current installation preserved"
+    fi
     if [[ -d "$install_dir" ]]; then
-        mv -- "$install_dir" "$transaction_backup"
+        if ! mv -- "$install_dir" "$transaction_backup"; then
+            restore_service_state "$transaction_dir/service-state" ||
+                die "Failed to resume the previous service; recovery files remain at $transaction_dir"
+            rm -rf -- "$transaction_dir"
+            die "Failed to back up the current installation"
+        fi
         transaction_had_previous="true"
     fi
     if ! mv -- "$staged_install" "$install_dir"; then
-        [[ "$transaction_had_previous" == "true" ]] && mv -- "$transaction_backup" "$install_dir"
+        if [[ "$transaction_had_previous" == true ]] && ! mv -- "$transaction_backup" "$install_dir"; then
+            die "Activation and rollback failed; original binary remains at $transaction_backup"
+        fi
+        restore_service_state "$transaction_dir/service-state" ||
+            die "Failed to resume the previous service; recovery files remain at $transaction_dir"
         rm -rf -- "$transaction_dir"
         die "Failed to activate the staged XrayRP release"
     fi
@@ -799,17 +979,17 @@ EOF
 }
 
 start_service() {
-    systemctl daemon-reload
-    systemctl stop XrayR >/dev/null 2>&1 || true
-    systemctl enable XrayR
-    systemctl start XrayR
+    service_control daemon-reload || return 1
+    service_control stop >/dev/null 2>&1 || true
+    service_control enable || return 1
+    service_control start || return 1
+    service_control is-active --quiet
 }
 
 print_next_steps() {
     echo ""
     echo "Useful commands:"
-    echo "systemctl status XrayR"
-    echo "journalctl -u XrayR -f"
+    echo "XrayR status"
     echo "XrayR log"
 }
 
@@ -817,7 +997,7 @@ print_dry_run() {
     detect_arch
 
     echo "Dry run: no files will be written and no services will be changed."
-    echo "Would verify root privileges and Linux systemd before installing."
+    echo "Would verify root privileges and a running systemd or OpenRC environment before installing."
     echo "Would install required tools: curl, wget, unzip, tar, socat."
     if [[ "$version" == "latest" ]]; then
         echo "Would resolve the latest release from https://api.github.com/repos/${release_repo}/releases/latest."
@@ -854,7 +1034,7 @@ main() {
     fi
 
     require_root
-    require_systemd
+    require_service_manager
     detect_os
     detect_arch
 
@@ -874,7 +1054,7 @@ main() {
     fi
     if ! start_service; then
         rollback_installation
-        die "XrayR failed to start; the previous installation was restored"
+        die "XrayR failed to start; rollback was attempted (see preceding errors if incomplete)"
     fi
     commit_installation
     trap - EXIT
