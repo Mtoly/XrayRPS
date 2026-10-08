@@ -97,7 +97,7 @@ docker compose ps
 - [XrayRP](https://github.com/Mtoly/XrayRP)：核心程序、发布包与镜像。
 - [贡献指南](CONTRIBUTING.md) · [变更记录](CHANGELOG.md) · [安全文档](SECURITY.md)
 
-主机服务以 `root:root` 运行。部署前审阅脚本、固定生产版本并备份配置；
+`XrayR.service` 明确使用 `root:root` 运行，OpenRC 服务同样使用该身份。部署前审阅脚本、固定生产版本并备份配置；
 不要提交 Token、私钥或证书，也不要将本地状态接口暴露到公网。安全报告流程见 [SECURITY.md](SECURITY.md)。
 
 ## License
