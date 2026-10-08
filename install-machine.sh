@@ -134,6 +134,7 @@ restore_service_state() {
     fi
 }
 management_script="/usr/bin/XrayR"
+management_link="/usr/bin/xrayr"
 script_repo="Mtoly/XrayRPS"
 release_repo="Mtoly/XrayRP"
 raw_branch="main"
@@ -715,16 +716,40 @@ install_service() {
 }
 
 install_management_script() {
+    local snapshot="$transaction_dir/management-state"
+    local candidate="$snapshot/new-script"
+    mkdir -p "$snapshot"
+    # Preserve absent paths and symlinks as well as regular-file permissions.
+    if [[ -e "$management_script" || -L "$management_script" ]]; then
+        cp -a -- "$management_script" "$snapshot/script"
+    fi
+    if [[ -e "$management_link" || -L "$management_link" ]]; then
+        cp -a -- "$management_link" "$snapshot/link"
+    fi
+    touch "$snapshot/ready"
     if [[ -f "${cur_dir}/XrayR.sh" ]]; then
-        cp -f "${cur_dir}/XrayR.sh" "$management_script"
+        cp -- "${cur_dir}/XrayR.sh" "$candidate"
     else
         curl --fail --silent --show-error --location \
             --proto '=https' --tlsv1.2 \
-            -o "$management_script" "https://raw.githubusercontent.com/${script_repo}/${raw_branch}/XrayR.sh"
+            -o "$candidate" "https://raw.githubusercontent.com/${script_repo}/${raw_branch}/XrayR.sh"
     fi
-    chmod +x "$management_script"
-    ln -sf "$management_script" /usr/bin/xrayr
-    chmod +x /usr/bin/xrayr
+    chmod 0755 "$candidate"
+    mv -fT -- "$candidate" "$management_script"
+    ln -sf "$management_script" "$management_link"
+}
+
+restore_management_script() {
+    local snapshot="$transaction_dir/management-state"
+    [[ -f "$snapshot/ready" ]] || return 0
+    rm -f -- "$management_script" "$management_link" || return 1
+    if [[ -e "$snapshot/script" || -L "$snapshot/script" ]]; then
+        cp -a -- "$snapshot/script" "$management_script" || return 1
+    fi
+    if [[ -e "$snapshot/link" || -L "$snapshot/link" ]]; then
+        cp -a -- "$snapshot/link" "$management_link" || return 1
+    fi
+    return 0
 }
 
 copy_default_config_file() {
@@ -754,7 +779,7 @@ rollback_installation() {
         transaction_active=false
         return 1
     fi
-    if ! restore_service_state "$transaction_dir/service-state"; then
+    if ! restore_management_script || ! restore_service_state "$transaction_dir/service-state"; then
         echo "Rollback incomplete; recovery files remain at $transaction_dir." >&2
         transaction_active=false
         return 1

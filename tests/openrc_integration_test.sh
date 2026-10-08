@@ -156,6 +156,12 @@ rc-service XrayR status
 wait_child
 
 # Machine --force failure restores original config and service, with no panel call.
+printf '#!/bin/bash\necho retained-management-fixture\n' > "$work/original-management"
+cp /usr/bin/XrayR "$work/current-management"
+cp "$work/original-management" /usr/bin/XrayR
+chmod 0750 /usr/bin/XrayR
+management_before=$(sha256sum /usr/bin/XrayR)
+alias_before=$(readlink /usr/bin/xrayr)
 if (
     source "$repo_root/install-machine.sh"
     cur_dir="$repo_root"
@@ -167,6 +173,11 @@ if (
         --token fixture-replacement-secret --version 0.9.5 --force
 ) > "$work/machine-failure.out" 2>&1; then fail "machine failure accepted"; fi
 [[ $(sha256sum /etc/XrayR/config.yml) == "$before" ]] || fail "force failure lost original credentials"
+[[ $(sha256sum /usr/bin/XrayR) == "$management_before" ]] || fail "force failure lost original management script"
+[[ $(stat -c %a /usr/bin/XrayR) == 750 ]] || fail "force failure changed management script permissions"
+[[ $(readlink /usr/bin/xrayr) == "$alias_before" ]] || fail "force failure changed management alias"
+cp "$work/current-management" /usr/bin/XrayR
+chmod 0755 /usr/bin/XrayR
 rc-service XrayR status
 wait_child
 XrayR stop
