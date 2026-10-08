@@ -15,9 +15,11 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Shell syntax
-        run: bash -n install.sh install-machine.sh XrayR.sh tests/*.sh
+        run: |
+          bash -n install.sh install-machine.sh XrayR.sh tests/*.sh
+          sh -n XrayR.openrc
       - name: Python syntax
-        run: python3 -c "import ast, pathlib; ast.parse(pathlib.Path('tests/pty_run.py').read_text(encoding='utf-8'))"
+        run: python3 -c "import ast, pathlib; [ast.parse(p.read_text(encoding='utf-8')) for p in pathlib.Path('tests').rglob('*.py')]"
       - name: ShellCheck
         run: shellcheck --severity=error install.sh install-machine.sh XrayR.sh tests/*.sh
       - name: Repository tests
@@ -38,3 +40,12 @@ jobs:
           yaml.safe_load(Path("config/config.yml").read_text(encoding="utf-8"))
           print("configuration parse passed")
           PY
+
+  alpine-openrc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build isolated Alpine fixture
+        run: docker build -f tests/alpine.Dockerfile -t xrayrps-openrc-test .
+      - name: OpenRC integration (fixture process, no real panel or PID 1 reboot)
+        run: docker run --rm xrayrps-openrc-test

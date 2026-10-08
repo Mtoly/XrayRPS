@@ -4,12 +4,16 @@
 
 ### Added
 
+- Support running OpenRC environments in both installers and the management menu with a native supervise-daemon service, protected logs, and runlevel autostart.
+
 - Prompt interactively for `--api-host`, `--machine-id`, and `--token` in `install-machine.sh` when a controlling terminal is available and those options are not supplied. The token is read without echo and is never printed or logged.
 - Keep non-interactive runs unchanged: without a controlling terminal the prompt step is skipped, `validate_args` still reports the first missing option, and all existing CLI invocations behave as before.
 - Allow `install-machine.sh` to run when it is fed to bash through stdin (`bash -s -- <options>`); previously `set -u` aborted on the unset `BASH_SOURCE` lookup.
 - Docker Compose now follows the latest XrayRP release by default while allowing `XRAYRP_TAG` to pin a specific version.
 
 ### Fixed
+
+- Detect the running service manager independently of distribution and restore prior binary, configuration, service definition, active state and autostart state on installation failures.
 
 - Normalize an optional `v` prefix from explicit XrayRP release versions so the version update path can retrieve the current unprefixed release tags (for example, `0.9.4`).
 - Use the published `ghcr.io/mtoly/xrayrp` image in the Compose file, README commands, and Docker Compose test; the previous references used a package name missing the final `p`.
