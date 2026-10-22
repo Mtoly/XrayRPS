@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Use a positive OpenRC respawn period so Alpine 3.21 can start XrayR while retaining unlimited crash restarts and the 10-second restart delay.
+
 - Detect the running service manager independently of distribution and restore prior binary, configuration, service definition, active state and autostart state on installation failures.
 
 - Normalize an optional `v` prefix from explicit XrayRP release versions so the version update path can retrieve the current unprefixed release tags (for example, `0.9.4`).
@@ -23,6 +25,8 @@
 - Keep the existing systemd sandboxing controls and continue to run `systemctl daemon-reload` before service restart.
 
 ### Tests
+
+- Run the native OpenRC integration suite on both Alpine 3.21 and 3.22, including installation, crash respawn, configuration preservation, and rollback.
 
 - Cover fresh installs, historical root-service upgrades, upgrades from the dedicated-account unit, hosts with and without an existing `xrayr` account, repeated installation, machine mode, root ownership repair, preserved configuration/certificates/state, and TCP 80/443 binding under the root service identity.
 - Cover interactive prompting through a real pseudo-terminal: complete CLI arguments never prompt, missing values are collected from prompts, the token stays hidden and out of captured output, and non-interactive runs without a controlling terminal never block.

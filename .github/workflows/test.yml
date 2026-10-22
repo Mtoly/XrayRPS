@@ -43,9 +43,13 @@ jobs:
 
   alpine-openrc:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        alpine: ['3.21', '3.22']
     steps:
       - uses: actions/checkout@v4
       - name: Build isolated Alpine fixture
-        run: docker build -f tests/alpine.Dockerfile -t xrayrps-openrc-test .
+        run: docker build --build-arg ALPINE_VERSION=${{ matrix.alpine }} -f tests/alpine.Dockerfile -t xrayrps-openrc-test .
       - name: OpenRC integration (fixture process, no real panel or PID 1 reboot)
         run: docker run --rm xrayrps-openrc-test

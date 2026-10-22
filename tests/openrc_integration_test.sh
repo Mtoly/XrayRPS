@@ -12,7 +12,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 
 # The container is not an OpenRC PID 1 boot. Supply only the network dependency,
 # then initialize OpenRC state with its own runlevel command.
-printf 'rc_sys="docker"\n' >> /etc/rc.conf
+printf 'rc_sys="docker"\nrc_cgroup_mode="none"\n' >> /etc/rc.conf
 printf '#!/sbin/openrc-run\ndepend() { provide net; }\nstart() { return 0; }\n' > /etc/init.d/test-network
 chmod 0755 /etc/init.d/test-network
 rc-update add test-network default
@@ -57,8 +57,11 @@ wait_child() {
     arch=64
     cur_dir="$work"
     download_https() { fixture_download "$@"; }
-    install_XrayR 0.9.5 > "$work/ordinary.out" 2>&1
-)
+    install_XrayR 0.9.5
+) > "$work/ordinary.out" 2>&1 || {
+    cat "$work/ordinary.out" >&2
+    fail "ordinary install failed"
+}
 [[ -x /etc/init.d/XrayR ]] || fail "ordinary install did not install OpenRC service"
 XrayR start
 wait_child
