@@ -12,7 +12,8 @@ no_new_privs=yes
 rc_ulimit="-n 999999 -c 0"
 respawn_delay=10
 respawn_max=0
-respawn_period=0
+# OpenRC 0.55 requires a positive period, even with unlimited respawns.
+respawn_period=1800
 output_log="/var/log/XrayR/output.log"
 error_log="/var/log/XrayR/error.log"
 
